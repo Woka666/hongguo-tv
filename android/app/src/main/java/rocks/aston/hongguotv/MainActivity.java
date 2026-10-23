@@ -43,6 +43,7 @@ public class MainActivity extends Activity {
     private boolean backPending;
     private volatile boolean activityForeground;
     private volatile boolean playbackPageActive;
+    private boolean playbackActive;
     private AlertDialog exitDialog;
     private boolean keyboardVisible;
     private final InputEditingState inputEditingState = new InputEditingState();
@@ -319,6 +320,19 @@ public class MainActivity extends Activity {
         decor.post(restoreFullscreen);
     }
 
+    private void syncKeepScreenOn() {
+        if (playbackActive && activityForeground && !destroyed) {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        } else {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
+    }
+
+    private void setKeepScreenOn(boolean active) {
+        playbackActive = active;
+        syncKeepScreenOn();
+    }
+
     private void grantWebViewFocus(boolean repairingSearchInput) {
         if (destroyed || webView == null) return;
         if (!repairingSearchInput && (inputEditingState.snapshot().isEditing() || isKeyboardVisible())) return;
@@ -509,6 +523,11 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public void setPlaybackActive(boolean active) {
+            runOnUiThread(() -> setKeepScreenOn(active));
+        }
+
+        @JavascriptInterface
         public void finishEditing() {
             boolean wasSearchEditing = inputEditingState.finishCurrent() == InputEditingState.Target.SEARCH;
             runOnUiThread(() -> {
@@ -616,6 +635,9 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         activityForeground = false;
+        // Release the actual window flag while backgrounded, but retain the
+        // playback intent so a foreground return can restore it immediately.
+        syncKeepScreenOn();
         inputEditingState.cancelBack();
         routedVerticalKeys = 0;
         routedHorizontalKeys = 0;
@@ -636,6 +658,10 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         activityForeground = true;
+        // Reapply the flag before WebView/native playback is resumed. This
+        // covers the case where no new `playing` callback is emitted after a
+        // short background/foreground transition.
+        syncKeepScreenOn();
         if (startupAnimation != null && startupPanel.getVisibility() == View.VISIBLE && startupRetry.getVisibility() != View.VISIBLE) startupAnimation.start();
         applyFullscreen();
         if (webView != null) {

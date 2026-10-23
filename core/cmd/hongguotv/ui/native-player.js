@@ -48,6 +48,13 @@
       if (!usingNative && !nativeAttempted && state.source && !state.paused && (!state.started || !domHasFrame())) startNativeFallback(false);
     }, FALLBACK_DELAY);
   }
+  function notifyPlaybackActive(active) {
+    try {
+      if (window.HongguoTVInput && typeof window.HongguoTVInput.setPlaybackActive === 'function') {
+        window.HongguoTVInput.setPlaybackActive(active);
+      }
+    } catch (ignored) {}
+  }
   function dispatch(name, detail) {
     var list = (listeners[name] || []).slice();
     list.forEach(function (listener) { try { listener.call(proxy, detail || { type: name, target: proxy }); } catch (ignored) {} });
@@ -134,6 +141,7 @@
   }
   function resetToDomSource(next) {
     clearFallbackTimer();
+    notifyPlaybackActive(false);
     nativeRequested = false;
     loadId = 'hongguo-' + (++sequence);
     if (isNative()) {
@@ -202,7 +210,7 @@
       else invokePlay();
       return Promise.resolve();
     },
-    pause: function () { if (!isNative()) { state.paused = true; clearFallbackTimer(); domVideo.pause(); return; } state.paused = true; if (bridge.pause) try { bridge.pause(); } catch (ignored) {} dispatch('pause'); },
+    pause: function () { if (!isNative()) { state.paused = true; notifyPlaybackActive(false); clearFallbackTimer(); domVideo.pause(); return; } state.paused = true; notifyPlaybackActive(false); if (bridge.pause) try { bridge.pause(); } catch (ignored) {} dispatch('pause'); },
     classList: domVideo.classList,
     style: domVideo.style,
     error: null,
@@ -246,10 +254,11 @@
         dispatch('nativeframe', { type: 'nativeframe', nativeFrame: true, width: state.videoWidth, height: state.videoHeight });
         dispatch('loadedmetadata'); dispatch('loadeddata'); dispatch('canplay'); return;
       }
-      if (name === 'playing') { state.started = true; state.paused = false; state.ended = false; state.seeking = false; state.readyState = Math.max(3, state.readyState); dispatch('playing', detail); return; }
-      if (name === 'paused') { state.paused = true; dispatch('pause', detail); return; }
-      if (name === 'ended') { state.ended = true; state.paused = true; state.seeking = false; dispatch('ended', detail); return; }
+      if (name === 'playing') { state.started = true; state.paused = false; state.ended = false; state.seeking = false; state.readyState = Math.max(3, state.readyState); notifyPlaybackActive(true); dispatch('playing', detail); return; }
+      if (name === 'paused') { state.paused = true; notifyPlaybackActive(false); dispatch('pause', detail); return; }
+      if (name === 'ended') { state.ended = true; state.paused = true; state.seeking = false; notifyPlaybackActive(false); dispatch('ended', detail); return; }
       if (name === 'error') {
+        notifyPlaybackActive(false);
         if (fixedNative) {
           state.paused = true; state.started = false; state.readyState = 0;
           nativeRequested = false;
@@ -277,11 +286,13 @@
       if (isNative()) return;
       if (name === 'playing') {
         state.started = true; state.paused = false;
+        notifyPlaybackActive(true);
         if (domHasFrame()) clearFallbackTimer(); else armNativeFallback();
       }
-      else if (name === 'pause') { state.paused = true; clearFallbackTimer(); }
-      else if (name === 'ended') { state.ended = true; state.paused = true; clearFallbackTimer(); }
+      else if (name === 'pause') { state.paused = true; notifyPlaybackActive(false); clearFallbackTimer(); }
+      else if (name === 'ended') { state.ended = true; state.paused = true; notifyPlaybackActive(false); clearFallbackTimer(); }
       else if (name === 'error') {
+        notifyPlaybackActive(false);
         clearFallbackTimer();
         if (startNativeFallback(true)) return;
       }
