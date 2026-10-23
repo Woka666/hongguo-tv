@@ -1249,7 +1249,7 @@
   function moveSearchFilter(current, direction) {
     if (current && current.id === 'filter-toggle') {
       if (direction === 'up') return firstSearchAction() || searchInput;
-      if (direction === 'down') return document.getElementById('filter-panel').classList.contains('is-collapsed') ? firstSearchResult() : firstVisible('.search-filter');
+      if (direction === 'down') return document.getElementById('filter-panel').classList.contains('is-collapsed') ? firstSearchResult() || firstVisible('#search-pagination .list-retry') : firstVisible('.search-filter');
       if (direction === 'left') return activeSidebar();
       return null;
     }
@@ -1267,7 +1267,7 @@
     var rowIndex = rows.indexOf(row);
     var targetRowIndex = rowIndex + (direction === 'up' ? -1 : 1);
     if (targetRowIndex < 0) return firstVisible('#filter-toggle') || firstVisible('.search-history-action') || firstSearchAction() || searchInput;
-    if (targetRowIndex >= rows.length) return firstSearchResult() || firstVisible('.search-more');
+    if (targetRowIndex >= rows.length) return firstSearchResult() || firstVisible('.search-more') || firstVisible('#search-pagination .list-retry');
     var targetItems = focusables('.filter-row[data-filter-group="' + rows[targetRowIndex].dataset.filterGroup + '"] .search-filter');
     if (!targetItems.length) return null;
     var currentRect = current.getBoundingClientRect();
@@ -1506,7 +1506,7 @@
     if (zone === 'searchActions') {
       if (direction === 'left' || direction === 'right') return moveWithinZone(zone, current, direction) || (direction === 'left' ? searchInput : null);
       if (direction === 'up') return searchInput;
-      if (direction === 'down') return firstVisible('.search-history-action') || firstSearchFilter() || firstSearchResult();
+      if (direction === 'down') return firstVisible('.search-history-action') || firstSearchFilter() || firstSearchResult() || firstVisible('#search-pagination .list-retry');
       return null;
     }
     if (zone === 'searchHistory') {
@@ -1926,7 +1926,24 @@
     }
     var current = event.remoteNavigation ? remoteFocusTarget() || document.activeElement : document.activeElement;
     if (typeof desktopShell !== 'undefined' && desktopShell && window.HongguoDesktopUI.editing(current)) {
-      if (event.isComposing || event.keyCode === 229 || key !== 'Enter') return;
+      if (event.isComposing || event.keyCode === 229) return;
+      if (current.id === 'search-input') {
+        if (key === 'Escape' && searchSuggestionOpen) {
+          handleBack();
+          event.preventDefault(); event.stopPropagation(); return;
+        }
+        var searchTarget = null;
+        if (key === 'ArrowDown') searchTarget = moveFrom(current, 'down');
+        else if (key === 'ArrowRight' && typeof current.selectionStart === 'number' &&
+            current.selectionStart === current.value.length && current.selectionEnd === current.selectionStart) {
+          searchTarget = firstSearchAction();
+        }
+        if (searchTarget) {
+          goFocus(searchTarget);
+          event.preventDefault(); event.stopPropagation(); return;
+        }
+      }
+      if (key !== 'Enter') return;
       if (current.id === 'search-input') submitSearch();
       else if (current.id === 'account-phone') accountSendCode();
       else if (current.id === 'account-code') accountLogin();
@@ -6251,9 +6268,9 @@
     closeSearchSuggestions(false);
     var query = window.HongguoSearchHistory.normalize(searchInput ? searchInput.value : '');
     if (!query) { showNotice(uiText('content.searchLength', '请输入不超过100字的剧名或关键词')); goFocus(searchInput); return; }
+    var returnTarget = remoteFocusTarget() || document.activeElement;
     if (androidShell && window.HongguoTVInput && typeof window.HongguoTVInput.finishSearchEditing === 'function') window.HongguoTVInput.finishSearchEditing();
     searchInput.value = query;
-    var returnTarget = document.activeElement;
     activeSearchQuery = query; searchKind = 'keyword';
     document.getElementById('filter-panel').classList.add('is-hidden'); document.getElementById('search-browse').classList.remove('is-hidden');
     document.getElementById('search-result-title').textContent = uiText('ui.loadedSearchPrefix', '搜索：{query}', { query: query });
@@ -6261,7 +6278,15 @@
     searchPager.historyEpoch = searchHistoryEpoch;
     var generation = searchPager.generation;
     result.then(function () {
-      if (generation !== searchPager.generation || activeSearchQuery !== query || pageMode() !== 'search' || searchPager.error || !searchPager.loaded) return;
+      if (generation !== searchPager.generation || activeSearchQuery !== query || pageMode() !== 'search') return;
+      if (searchPager.error) {
+        if (document.activeElement === returnTarget || remoteFocusTarget() === returnTarget) {
+          var retry = firstVisible('#search-pagination .list-retry');
+          if (retry) goFocus(retry);
+        }
+        return;
+      }
+      if (!searchPager.loaded) return;
       if (document.activeElement === returnTarget) goFocus(firstSearchResult() || firstSearchAction());
     });
   }

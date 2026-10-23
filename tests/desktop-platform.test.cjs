@@ -18,6 +18,27 @@ test('desktop input keys preserve deletion, paste, arrows, tab, space and IME; E
  for(const [id,name] of [['account-phone','phone'],['account-code','code'],['search-input','search']]){c.document.activeElement.id=id;let prevented=0;c.handleKey({key:'Enter',preventDefault(){prevented++},stopPropagation(){}});assert.equal(prevented,1);assert.equal(c.actions.at(-1),name)}
 });
 
+test('desktop search Escape closes suggestions and keyboard arrows reach suggestions and search',()=>{
+ const keys=app.slice(app.indexOf('  function normalizedKey('),app.indexOf('  function showNotice('));
+ const input={tagName:'INPUT',id:'search-input',value:'剧名',selectionStart:2,selectionEnd:2,classList:{contains(){return false}}};
+ const c=vm.createContext({window:{HongguoDesktopUI:{editing}},document:{activeElement:input},desktopShell:true,shell:{classList:{contains(){return false}}}});
+ vm.runInContext(`var keyNames={},numericKeypad,searchSuggestionOpen=true,backs=0,moved=[],focused=[];
+ function handleEndRecommendationKey(){return false} function accountKeypadOpen(){return false}
+ function handleBack(){backs++;searchSuggestionOpen=false;return true}
+ function moveFrom(current,direction){moved.push(direction);return {id:direction==='down'?'search-suggestion':'search-submit',classList:{contains(){return false}}}}
+ function firstSearchAction(){return {id:'search-submit',classList:{contains(){return false}}}} function goFocus(target){focused.push(target.id);document.activeElement=target}
+ function submitSearch(){} function accountSendCode(){} function accountLogin(){}`+keys,c);
+ let prevented=0,stopped=0;
+ c.handleKey({key:'Escape',preventDefault(){prevented++},stopPropagation(){stopped++}});
+ assert.equal(c.backs,1);assert.equal(prevented,1);assert.equal(stopped,1);
+ c.document.activeElement=input; c.searchSuggestionOpen=true; prevented=0;stopped=0;
+ c.handleKey({key:'ArrowDown',preventDefault(){prevented++},stopPropagation(){stopped++}});
+ assert.deepEqual(Array.from(c.focused),['search-suggestion']);assert.deepEqual(Array.from(c.moved),['down']);assert.equal(prevented,1);assert.equal(stopped,1);
+ c.document.activeElement=input; input.selectionStart=input.value.length;input.selectionEnd=input.value.length;prevented=0;stopped=0;
+ c.handleKey({key:'ArrowRight',preventDefault(){prevented++},stopPropagation(){stopped++}});
+ assert.equal(c.focused.at(-1),'search-submit');assert.equal(prevented,1);assert.equal(stopped,1);
+});
+
 test('desktop update bridge reads async status and calls only download/folder bindings',async()=>{
  const {createUpdateBridge}=require('../core/cmd/hongguotv/ui/desktop.js');const calls=[];
  const win={go:{main:{desktopApp:{GetUpdateStatus:async()=>JSON.stringify({desktop:true,supported:true,state:'available',latest_code:2}),CheckUpdate:async()=>calls.push('check'),DownloadUpdate:async()=>calls.push('download'),OpenUpdateFolder:async()=>calls.push('folder')}}}};

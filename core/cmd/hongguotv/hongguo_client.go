@@ -805,6 +805,9 @@ func (c *hongguoClient) SearchSuggestions(ctx context.Context, query string) (Se
 		}
 		if videoData, ok := asMap(row["video_data"]); ok && len(videoData) > 0 {
 			if drama, valid := normalizeDrama(videoData); valid {
+				if drama.Title == "未命名短剧" {
+					drama.Title = name
+				}
 				suggestion.Drama = &drama
 				suggestion.Meta = suggestionMeta(videoData)
 			}

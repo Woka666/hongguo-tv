@@ -94,6 +94,22 @@ test('search suggestion requests are debounced and stale responses are ignored',
   assert.match(load, /searchInput\.value\.trim\(\) !== query/);
 });
 
+test('search failures focus a reachable retry action without stealing focus after navigation', () => {
+  const submit = block('submitSearch', 'renderSearchHistory');
+  const movement = block('moveFrom', 'handleKey');
+  const filterMovement = block('moveSearchFilter', 'moveWithinZone');
+  assert.match(submit, /var returnTarget = remoteFocusTarget\(\) \|\| document\.activeElement;[\s\S]*?finishSearchEditing\(\)[\s\S]*?if \(searchPager\.error\)[\s\S]*?document\.activeElement === returnTarget \|\| remoteFocusTarget\(\) === returnTarget[\s\S]*?firstVisible\('#search-pagination \.list-retry'\)[\s\S]*?goFocus\(retry\)/);
+  assert.match(movement, /if \(zone === 'searchActions'\)[\s\S]*?firstVisible\('#search-pagination \.list-retry'\)/);
+  assert.match(filterMovement, /if \(targetRowIndex >= rows\.length\)[\s\S]*?firstVisible\('#search-pagination \.list-retry'\)/);
+});
+
+test('desktop search editor routes Escape and boundary navigation to the autocomplete controls', () => {
+  const handler = block('handleKey', 'switchPlayerEpisode');
+  assert.match(handler, /desktopShell && window\.HongguoDesktopUI\.editing\(current\)[\s\S]*?key === 'Escape' && searchSuggestionOpen[\s\S]*?handleBack\(\)/);
+  assert.match(handler, /if \(key === 'ArrowDown'\) searchTarget = moveFrom\(current, 'down'\)/);
+  assert.match(handler, /key === 'ArrowRight' && typeof current\.selectionStart === 'number'[\s\S]*?current\.selectionEnd === current\.selectionStart[\s\S]*?searchTarget = firstSearchAction\(\)/);
+});
+
 test('selecting drama and actor suggestions uses existing detail and actor-work flows', () => {
   const activate = block('activateSearchSuggestion', 'lastSearchFilter');
   assert.match(activate, /item\.kind === 'short_play_actor' && item\.actor_id[\s\S]*?openActorWorks/);

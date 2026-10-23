@@ -380,6 +380,7 @@ func TestSearchNormalizesSearchList(t *testing.T) {
 func TestSearchSuggestionsNormalizesDramaActorAndKeyword(t *testing.T) {
 	body := `{"suggest_list":[` +
 		`{"word_type":"short_play_name","keyword":"1234567890123456789","name":"剧名建议","video_data":{"series_id":"1234567890123456789","series_title":"剧名建议","series_cover":"https://cover","episode_cnt":42,"category_list":[{"name":"剧情"}],"hot_score_data":{"text":"123万热度"}}},` +
+		`{"word_type":"short_play_name","keyword":"1234567890123456790","name":"极品四公子第五季","video_data":{"series_id":"1234567890123456790","episode_cnt":42}},` +
 		`{"word_type":"short_play_actor","keyword":"9876543210987654321","name":"演员建议","video_data":{}},` +
 		`{"word_type":"common_query","keyword":"hot-key","display_words":["热门词"]}]}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -396,17 +397,20 @@ func TestSearchSuggestionsNormalizesDramaActorAndKeyword(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SearchSuggestions failed: %v", err)
 	}
-	if len(result.Items) != 3 {
+	if len(result.Items) != 4 {
 		t.Fatalf("unexpected suggestions: %#v", result.Items)
 	}
 	if result.Items[0].Drama == nil || result.Items[0].Drama.SeriesID != "1234567890123456789" || !strings.Contains(result.Items[0].Meta, "全42集") {
 		t.Fatalf("drama suggestion was not normalized: %#v", result.Items[0])
 	}
-	if result.Items[1].ActorID != "9876543210987654321" || result.Items[1].Kind != "short_play_actor" {
-		t.Fatalf("actor ID was not kept as a string: %#v", result.Items[1])
+	if result.Items[2].ActorID != "9876543210987654321" || result.Items[2].Kind != "short_play_actor" {
+		t.Fatalf("actor ID was not kept as a string: %#v", result.Items[2])
 	}
-	if result.Items[2].Name != "热门词" || result.Items[2].Kind != "common_query" {
-		t.Fatalf("display_words fallback was not normalized: %#v", result.Items[2])
+	if result.Items[1].Drama == nil || result.Items[1].Drama.Title != "极品四公子第五季" {
+		t.Fatalf("drama title did not fall back to suggestion name: %#v", result.Items[1])
+	}
+	if result.Items[3].Name != "热门词" || result.Items[3].Kind != "common_query" {
+		t.Fatalf("display_words fallback was not normalized: %#v", result.Items[3])
 	}
 }
 

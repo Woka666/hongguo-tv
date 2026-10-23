@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -100,6 +101,24 @@ func stopStalledPage(result *ListResult, offset int) {
 		result.HasMore = false
 	}
 }
+
+func searchSuggestionsAsList(result SearchSuggestionsResult) ListResult {
+	items := make([]Drama, 0, len(result.Items))
+	seen := make(map[string]bool, len(result.Items))
+	for _, suggestion := range result.Items {
+		if suggestion.Kind != "short_play_name" || suggestion.Drama == nil {
+			continue
+		}
+		drama := *suggestion.Drama
+		if !validID(drama.SeriesID) || drama.SeriesID == "0" || seen[drama.SeriesID] {
+			continue
+		}
+		seen[drama.SeriesID] = true
+		items = append(items, drama)
+	}
+	return ListResult{CategoryResult: CategoryResult{Items: items}, Source: "suggestions"}
+}
+
 func dataMap(p map[string]any) (map[string]any, error) {
 	d, ok := asMap(p["data"])
 	if !ok {
@@ -602,12 +621,26 @@ func (s *server) lists(w http.ResponseWriter, r *http.Request) {
 		out, e = client.SubscriptionList(r.Context(), q, kind == "calendar")
 	case "search":
 		out, e = client.SearchList(r.Context(), q)
-		// The anonymous app search may return an empty HTTP 200 body. Preserve the
-		// working website search at page one; do not invent a remote next cursor.
+		// Anonymous app search may return an empty HTTP 200 body. The suggestion
+		// endpoint still returns playable drama metadata for exact-title queries,
+		// so use those items as a non-paginated first-page fallback before HTML.
 		if e != nil && asInt(q.Get("offset")) == 0 && q.Get("source") != "app" {
-			var web SearchResult
-			web, e = s.hongguo.Search(r.Context(), q.Get("q"))
-			out = ListResult{CategoryResult: CategoryResult{Items: web.Items}, Source: "web"}
+			suggestions, suggestionErr := s.hongguo.SearchSuggestions(r.Context(), q.Get("q"))
+			if suggestionErr == nil {
+				out = searchSuggestionsAsList(suggestions)
+				if len(out.Items) > 0 {
+					e = nil
+				}
+			}
+			if e != nil {
+				var web SearchResult
+				web, e = s.hongguo.Search(r.Context(), q.Get("q"))
+				if e == nil {
+					out = ListResult{CategoryResult: CategoryResult{Items: web.Items}, Source: "web"}
+				} else if suggestionErr != nil {
+					e = fmt.Errorf("搜索建议接口失败：%v；网页搜索失败：%w", suggestionErr, e)
+				}
+			}
 		}
 	default:
 		writeError(w, 404, "没有这个列表")
