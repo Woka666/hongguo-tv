@@ -85,7 +85,7 @@ final class PlaybackPreferences {
 
     @JavascriptInterface
     public String readMedia3Preference(String webviewVersion) {
-        if (!validWebViewVersion(webviewVersion)) return "";
+        if (!Media3RoutePreferencePolicy.validWebViewVersion(webviewVersion)) return "";
         String engine = preferences.getString("media3Engine", "");
         String storedVersion = preferences.getString("media3WebView", "");
         long expiresAt = preferences.getLong("media3ExpiresAt", 0L);
