@@ -375,7 +375,7 @@ func (c *passportClient) cloudJSONBody(ctx context.Context, path, method string,
 	if code := passportErrorCode(p); code != "" && code != "0" {
 		return nil, errors.New("云端未确认请求成功，请重新登录或稍后重试")
 	}
-	if _, ok := p["data"]; !ok && p["video_data"] == nil && method == http.MethodGet {
+	if _, ok := p["data"]; !ok && p["video_data"] == nil && p["search_tabs"] == nil && method == http.MethodGet {
 		return nil, errors.New("云端响应缺少 data")
 	}
 	return p, nil

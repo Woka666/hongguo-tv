@@ -56,6 +56,7 @@ type loginAttempt struct {
 }
 type accountManager struct {
 	mu               sync.Mutex
+	deviceMu         sync.Mutex
 	likeMu           sync.Mutex
 	likeRevision     uint64
 	dir              string
@@ -324,7 +325,7 @@ func (m *accountManager) sendCode(ctx context.Context, phone string) error {
 	// anonymous registered identity before any SMS request, also on rejection.
 	defer a.cancelRequest()
 	ctx = a.requestCtx
-	if err = a.client.registerDevice(ctx); err != nil {
+	if err = m.ensureDeviceRegistered(ctx, a.client, g); err != nil {
 		m.mu.Lock()
 		if g == m.generation && m.login == a && ctx.Err() == nil && m.disk.Profile == nil {
 			m.smsState = "rejected"
@@ -342,24 +343,11 @@ func (m *accountManager) sendCode(ctx context.Context, phone string) error {
 		m.endLogin(g, "phone", err)
 		return err
 	}
-	disk := m.disk
-	disk.Session = cloneAccountSession(a.client.session)
-	err = m.saveDisk(disk)
-	if err == nil {
-		m.disk = disk
-		// Retain a guard if the request times out after delivery is possible.
-		m.codeAfter = time.Now().Add(time.Minute)
-		m.smsState = "uncertain"
-		m.appCodeAllowed = true
-	} else {
-		m.smsState = "rejected"
-		m.codeAfter = time.Time{}
-	}
+	// Retain a guard if the request times out after delivery is possible.
+	m.codeAfter = time.Now().Add(time.Minute)
+	m.smsState = "uncertain"
+	m.appCodeAllowed = true
 	m.mu.Unlock()
-	if err != nil {
-		m.endLogin(g, "phone", err)
-		return err
-	}
 	p, err := a.client.sendCode(ctx, phone)
 	sent := err == nil && passportSuccess(p)
 	retry := asInt(passportData(p)["retry_time"])

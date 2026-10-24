@@ -135,7 +135,7 @@ func serveUI(root fs.FS) http.Handler {
 
 func (s *server) withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/v1/account") || r.URL.Path == "/api/v1/number-input" || strings.HasPrefix(r.URL.Path, "/api/v1/lists/") || r.URL.Path == "/api/v1/follow" || r.URL.Path == "/api/v1/notifications" || strings.HasPrefix(r.URL.Path, "/api/v1/player/") || r.URL.Path == "/api/v1/series/seasons" || r.URL.Path == "/api/v1/replies" || r.URL.Path == "/api/v1/reservation" || r.URL.Path == "/api/v1/comments" || r.URL.Path == "/api/v1/danmaku" || r.URL.Path == "/api/v1/library" {
+		if strings.HasPrefix(r.URL.Path, "/api/v1/account") || r.URL.Path == "/api/v1/number-input" || strings.HasPrefix(r.URL.Path, "/api/v1/lists/") || r.URL.Path == "/api/v1/search" || r.URL.Path == "/api/v1/Search" || r.URL.Path == "/api/v1/follow" || r.URL.Path == "/api/v1/notifications" || strings.HasPrefix(r.URL.Path, "/api/v1/player/") || r.URL.Path == "/api/v1/series/seasons" || r.URL.Path == "/api/v1/replies" || r.URL.Path == "/api/v1/reservation" || r.URL.Path == "/api/v1/comments" || r.URL.Path == "/api/v1/danmaku" || r.URL.Path == "/api/v1/library" {
 			if !privateLocalRequest(r) {
 				writeError(w, http.StatusForbidden, "只允许应用本身访问账号和记录")
 				return
@@ -278,16 +278,13 @@ func (s *server) seriesDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) search(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	result, err := s.hongguo.Search(r.Context(), r.URL.Query().Get("q"))
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": result})
+	// Keep the legacy route as a compatibility alias, but funnel every search
+	// through the same registered-device API and pagination contract.
+	request := r.Clone(r.Context())
+	requestURL := *r.URL
+	requestURL.Path = "/api/v1/lists/search"
+	request.URL = &requestURL
+	s.lists(w, request)
 }
 
 func (s *server) searchSuggestions(w http.ResponseWriter, r *http.Request) {

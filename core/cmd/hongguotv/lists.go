@@ -65,6 +65,59 @@ func (m *accountManager) listClient(requireLogin bool) (*passportClient, uint64,
 	}
 	return c, m.generation, nil
 }
+
+func (m *accountManager) ensureDeviceRegistered(ctx context.Context, c *passportClient, generation uint64) error {
+	m.deviceMu.Lock()
+	defer m.deviceMu.Unlock()
+
+	m.mu.Lock()
+	if generation != m.generation {
+		m.mu.Unlock()
+		return errAccountChanged
+	}
+	current := cloneAccountSession(m.disk.Session)
+	c.session = current
+	if m.disk.Profile != nil {
+		c.uid = m.disk.Profile.UID
+	}
+	if current.Registered && validID(current.DeviceID) && validID(current.InstallID) {
+		m.mu.Unlock()
+		return nil
+	}
+	m.mu.Unlock()
+
+	if err := c.registerDevice(ctx); err != nil {
+		return err
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if generation != m.generation || m.disk.Session.DeviceID != current.DeviceID || m.disk.Session.InstallID != current.InstallID {
+		return errAccountChanged
+	}
+	disk := m.disk
+	disk.Session = cloneAccountSession(c.session)
+	if err := m.saveDisk(disk); err != nil {
+		return err
+	}
+	m.disk = disk
+	return nil
+}
+
+func (m *accountManager) searchClient(ctx context.Context) (*passportClient, uint64, error) {
+	c, generation, err := m.listClient(false)
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := m.ensureDeviceRegistered(ctx, c, generation); err != nil {
+		return nil, 0, err
+	}
+	return c, generation, nil
+}
+
 func (m *accountManager) sameGeneration(g uint64) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -530,7 +583,7 @@ func (c *passportClient) SearchList(ctx context.Context, q url.Values) (ListResu
 	if query == "" || len([]rune(query)) > 80 {
 		return ListResult{}, errors.New("搜索关键词无效")
 	}
-	params := url.Values{"bookshelf_search_plan": {"4"}, "use_correct": {"true"}, "query": {query}, "count": {"100"}, "offset": {firstNonEmpty(q.Get("offset"), "0")}, "tab_type": {"11"}, "search_id": {q.Get("search_id")}, "passback": {q.Get("passback")}}
+	params := url.Values{"bookshelf_search_plan": {"4"}, "use_correct": {"true"}, "user_is_login": {"0"}, "query": {query}, "count": {"20"}, "offset": {firstNonEmpty(q.Get("offset"), "0")}, "tab_type": {"11"}, "search_id": {q.Get("search_id")}, "passback": {q.Get("passback")}}
 	p, e := c.cloudJSON(ctx, "/reading/bookapi/search/tab/v", http.MethodGet, params, nil)
 	if e != nil {
 		return ListResult{}, e
@@ -604,7 +657,13 @@ func (s *server) lists(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "频道参数无效")
 		return
 	}
-	client, g, e := s.accounts.listClient(kind == "reservations" || kind == "recommend" && q.Get("channel") == "45")
+	var client *passportClient
+	var g uint64
+	if kind == "search" {
+		client, g, e = s.accounts.searchClient(r.Context())
+	} else {
+		client, g, e = s.accounts.listClient(kind == "reservations" || kind == "recommend" && q.Get("channel") == "45")
+	}
 	if e != nil {
 		writeError(w, 401, e.Error())
 		return
@@ -621,9 +680,8 @@ func (s *server) lists(w http.ResponseWriter, r *http.Request) {
 		out, e = client.SubscriptionList(r.Context(), q, kind == "calendar")
 	case "search":
 		out, e = client.SearchList(r.Context(), q)
-		// Anonymous app search may return an empty HTTP 200 body. The suggestion
-		// endpoint still returns playable drama metadata for exact-title queries,
-		// so use those items as a non-paginated first-page fallback before HTML.
+		// Preserve website recovery when the app API returns an empty body on the
+		// first page, but do not replace the working app result path.
 		if e != nil && asInt(q.Get("offset")) == 0 && q.Get("source") != "app" {
 			suggestions, suggestionErr := s.hongguo.SearchSuggestions(r.Context(), q.Get("q"))
 			if suggestionErr == nil {

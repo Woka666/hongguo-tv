@@ -38,6 +38,97 @@ func fixtureAccount(t *testing.T, h http.HandlerFunc) *accountManager {
 	return m
 }
 
+func TestAnonymousSearchRegistersAndPersistsDevice(t *testing.T) {
+	var registrations atomic.Int32
+	m := fixtureAccount(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/service/2/device_register/" {
+			t.Errorf("unexpected anonymous search bootstrap request: %s %s", r.Method, r.URL.Path)
+			return
+		}
+		registrations.Add(1)
+		ioJSON(w, `{"device_id_str":"7391234567890123456","install_id_str":"7391234567890123457"}`)
+	})
+	c, generation, err := m.searchClient(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.session.Registered || c.session.DeviceID != "7391234567890123456" || c.session.InstallID != "7391234567890123457" || registrations.Load() != 1 {
+		t.Fatalf("search device not registered: session=%+v calls=%d", c.session, registrations.Load())
+	}
+	if !m.sameGeneration(generation) {
+		t.Fatal("search bootstrap changed the account generation")
+	}
+	b, err := os.ReadFile(filepath.Join(m.dir, "account.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var disk accountDisk
+	if err := json.Unmarshal(b, &disk); err != nil {
+		t.Fatal(err)
+	}
+	if !disk.Session.Registered || disk.Session.DeviceID != c.session.DeviceID || disk.Session.InstallID != c.session.InstallID {
+		t.Fatalf("registered device was not persisted: %+v", disk.Session)
+	}
+}
+
+func TestLegacySearchRoutesUseSharedAppSearch(t *testing.T) {
+	var registrations atomic.Int32
+	var searches atomic.Int32
+	m := fixtureAccount(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/service/2/device_register/":
+			registrations.Add(1)
+			ioJSON(w, `{"device_id_str":"7391234567890123456","install_id_str":"7391234567890123457"}`)
+		case "/reading/bookapi/search/tab/v":
+			searches.Add(1)
+			if r.Method != http.MethodGet || r.URL.Query().Get("query") != "统一搜索" {
+				t.Errorf("legacy search did not use app search API: %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+			}
+			ioJSON(w, `{"code":0,"search_tabs":[{"tab_type":11,"data":[{"video_data":[{"series_id":"7690163276214176792","title":"统一搜索结果","episode_cnt":12}]}]}]}`)
+		default:
+			t.Errorf("unexpected legacy search request: %s %s", r.Method, r.URL.Path)
+		}
+	})
+	s := &server{accounts: m}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/search", s.search)
+	mux.HandleFunc("/api/v1/Search", s.search)
+	handler := s.withCORS(mux)
+	for _, path := range []string{"/api/v1/search", "/api/v1/Search"} {
+		req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8797"+path+"?q=%E7%BB%9F%E4%B8%80%E6%90%9C%E7%B4%A2", nil)
+		req.RemoteAddr = "127.0.0.1:4567"
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", path, w.Code, w.Body.String())
+		}
+		var payload struct {
+			Data struct {
+				Items  []Drama `json:"items"`
+				Source string  `json:"source"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Data.Source != "app" || len(payload.Data.Items) != 1 || payload.Data.Items[0].Title != "统一搜索结果" {
+			t.Fatalf("unexpected shared search response: %+v", payload.Data)
+		}
+	}
+	if registrations.Load() != 1 || searches.Load() != 2 {
+		t.Fatalf("shared search bootstrap calls=%d searches=%d", registrations.Load(), searches.Load())
+	}
+
+	blocked := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8797/api/v1/search?q=统一搜索", nil)
+	blocked.RemoteAddr = "127.0.0.1:4567"
+	blocked.Header.Set("Origin", "https://evil.example")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, blocked)
+	if w.Code != http.StatusForbidden || searches.Load() != 2 {
+		t.Fatalf("cross-origin legacy search was not blocked: status=%d searches=%d", w.Code, searches.Load())
+	}
+}
+
 func TestPassportLoginIdentity(t *testing.T) {
 	for _, tc := range []struct {
 		name, response, want string

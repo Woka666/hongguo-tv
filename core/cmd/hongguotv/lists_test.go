@@ -157,14 +157,56 @@ func TestSearchGroupingAndPagination(t *testing.T) {
 	}
 }
 
+func TestSearchListUsesRegisteredAppContractAndServerCursor(t *testing.T) {
+	calls := 0
+	c, close := listFixtureClient(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		q := r.URL.Query()
+		if r.Method != http.MethodGet || r.URL.Path != "/reading/bookapi/search/tab/v" || q.Get("query") != "统一搜索" || q.Get("count") != "20" || q.Get("user_is_login") != "0" || q.Get("tab_type") != "11" {
+			t.Fatalf("unexpected App search request: %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+		switch calls {
+		case 1:
+			if q.Get("offset") != "0" || q.Get("search_id") != "" || q.Get("passback") != "" {
+				t.Fatalf("first page unexpectedly carried a cursor: %v", q)
+			}
+			ioJSON(w, `{"code":0,"search_tabs":[{"tab_type":11,"has_more":true,"next_offset":"20","search_id":"search-session","passback":"page-token","data":[{"video_data":[{"series_id":"7690163276214176792","title":"第一页","episode_cnt":12}]}]}]}`)
+		case 2:
+			if q.Get("offset") != "20" || q.Get("search_id") != "search-session" || q.Get("passback") != "page-token" {
+				t.Fatalf("second page lost server cursor: %v", q)
+			}
+			ioJSON(w, `{"code":0,"search_tabs":[{"tab_type":11,"has_more":false,"next_offset":"40","search_id":"search-session","passback":"page-token","data":[{"video_data":[{"series_id":"7690163276214176793","title":"第二页","episode_cnt":8}]}]}]}`)
+		default:
+			t.Fatalf("unexpected search request %d", calls)
+		}
+	})
+	defer close()
+
+	first, err := c.SearchList(context.Background(), url.Values{"q": {"统一搜索"}})
+	if err != nil || len(first.Items) != 1 || first.Items[0].Title != "第一页" || !first.HasMore || first.NextOffset != 20 || first.SearchID != "search-session" || first.Passback != "page-token" {
+		t.Fatalf("bad first search page: %+v err=%v", first, err)
+	}
+	second, err := c.SearchList(context.Background(), url.Values{"q": {"统一搜索"}, "offset": {"20"}, "search_id": {first.SearchID}, "passback": {first.Passback}})
+	if err != nil || len(second.Items) != 1 || second.Items[0].Title != "第二页" || second.HasMore || second.NextOffset != 40 {
+		t.Fatalf("bad second search page: %+v err=%v", second, err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected exactly two search requests, got %d", calls)
+	}
+}
+
 func TestSearchListFallsBackToDramaSuggestionsWhenAppSearchIsEmpty(t *testing.T) {
 	var appSearchCalled bool
 	accounts := fixtureAccount(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/reading/bookapi/search/tab/v" {
+		switch r.URL.Path {
+		case "/service/2/device_register/":
+			ioJSON(w, `{"device_id_str":"7391234567890123456","install_id_str":"7391234567890123457"}`)
+		case "/reading/bookapi/search/tab/v":
+			appSearchCalled = true
+			w.Header().Set("Content-Type", "application/json")
+		default:
 			t.Errorf("unexpected app request: %s", r.URL.Path)
 		}
-		appSearchCalled = true
-		w.Header().Set("Content-Type", "application/json")
 	})
 
 	var suggestionCalled bool
