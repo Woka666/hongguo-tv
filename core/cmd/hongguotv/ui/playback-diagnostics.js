@@ -49,7 +49,7 @@
     var provider = text(device.webview_version, 28), engineVersion = engine ? engine[1] : tr('diagnostic.unknown');
     var webview = provider ? provider + ' · Chromium ' + engineVersion : 'Chromium ' + engineVersion + tr('diagnostic.browserIdentity');
     var rows = [], summary;
-    function add(label, value) { rows.push({ label: label, value: value }); }
+    function add(label, value, wide) { rows.push({ label: label, value: value, wide: !!wide }); }
     var playerName = native.engine === 'mpv' ? 'MPV' : 'Media3';
     if (native.error_kind === 'decoder') summary = tr('diagnostic.decoderFailure', { player: playerName, codec: native.video_mime === 'video/hevc' ? ' HEVC ' : '' });
     else if (native.track_support === 'FORMAT_UNSUPPORTED_SUBTYPE' || native.track_support === 'FORMAT_UNSUPPORTED_TYPE') summary = tr('diagnostic.unsupportedTrack');
@@ -68,6 +68,24 @@
     add(tr('diagnostic.systemArch'), device.sdk ? 'Android ' + text(device.android_version, 20) + ' / API ' + num(device.sdk) + ' · ' + bits + (arch ? ' / ' + arch : '') : (android ? tr('diagnostic.androidBitsUnknown') : tr('diagnostic.desktopBrowser')) + (arch ? ' / ' + arch : ''));
     rows = rows.concat(snapshot.environmentRows || []);
     add('WebView', webview);
+    var route = snapshot.playbackRoute;
+    if (route) {
+      var preferred = text(route.preferred_path, 16) || 'HTML5';
+      var active = text(route.active_path, 16) || 'HTML5';
+      var finalPath = text(route.final_path, 16) || tr('diagnostic.notObtained');
+      add(tr('diagnostic.playerRoute'), tr('diagnostic.playerRouteValue', {
+        preferred: preferred, active: active, final: finalPath,
+        switched: tr(route.switched ? 'diagnostic.routeYes' : 'diagnostic.routeNo'),
+        reason: text(route.switch_reason, 40) || tr('diagnostic.notObtained'),
+        outcome: text(route.outcome, 48) || tr('diagnostic.notObtained'),
+        frame: tr(route.final_first_frame ? 'diagnostic.firstFrame' : 'diagnostic.noFirstFrame')
+      }), true);
+      add(tr('diagnostic.playerRouteTiming'), tr('diagnostic.playerRouteTimingValue', {
+        metadata: millis(route.metadata_ms), zero: millis(route.zero_progress_wait_ms !== null && route.zero_progress_wait_ms !== undefined ? route.zero_progress_wait_ms : route.zero_progress_ms),
+        switch: millis(route.switch_ms), first: millis(route.first_frame_ms !== null && route.first_frame_ms !== undefined ? route.first_frame_ms : route.first_frame_wait_ms),
+        media3: millis(route.media3_first_frame_ms !== null && route.media3_first_frame_ms !== undefined ? route.media3_first_frame_ms : route.media3_wait_ms)
+      }), true);
+    }
     add(tr('diagnostic.currentVideo'), snapshot.episode > 0 ? tr('diagnostic.episodeFormat', { episode: num(snapshot.episode), quality: text(snapshot.quality, 20) || tr('diagnostic.auto') }) : tr('diagnostic.episodeUnknown'));
     add(tr('diagnostic.videoPicture'), video.width + ' × ' + video.height + (video.decoded !== null ? ' · ' + tr('diagnostic.frameCount') + ' ' + video.decoded : ' · ' + tr('diagnostic.frameUnavailable')));
     add(tr('diagnostic.playbackClock'), clock(video.position) + ' / ' + (video.duration ? clock(video.duration) : tr('diagnostic.durationUnknown')) + ' · ' + tr('diagnostic.bufferedSeconds', { seconds: Math.floor(video.buffered) }));

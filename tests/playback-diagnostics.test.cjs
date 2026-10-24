@@ -109,3 +109,23 @@ test('playback diagnostics show split episode transition timings',()=>{
   const mpvRows=Object.fromEntries(diagnostics.report(mpv).rows.map(x=>[x.label,x.value]));
   assert.match(mpvRows['MPV 切源耗时'],/停止边界 80ms.*FILE_LOADED 500ms.*输出就绪 900ms/);
 });
+
+test('playback diagnostics report local route choice, switch reason, first frame and stage timings without source data',()=>{
+  const s=snapshot({playbackRoute:{
+    webview_version:'122.0.6261.94',preferred_path:'HTML5',active_path:'Media3',final_path:'Media3',
+    switched:true,switch_reason:'decode_error',outcome:'first_frame',metadata_ms:340,zero_progress_wait_ms:null,
+    zero_progress_ms:null,switch_ms:980,first_frame_ms:2310,first_frame_wait_ms:1330,
+    media3_first_frame_ms:1330,media3_wait_ms:null,final_first_frame:true,cache_written:true,
+    source:'https://media.invalid/video.mp4?token=private'
+  }});
+  const report=diagnostics.report(s),rows=Object.fromEntries(report.rows.map(x=>[x.label,x.value]));
+  assert.match(rows['播放器路径'],/首选 HTML5.*当前 Media3.*最终 Media3.*自动切换 是.*decode_error.*首帧 已出首帧/);
+  assert.match(rows['播放器阶段耗时'],/元数据 340ms.*切换 980ms.*首帧 2310ms.*Media3 首帧 1330ms/);
+  assert.equal(report.rows.find(row=>row.label==='播放器路径').wide,true);
+  assert.doesNotMatch(JSON.stringify(report),/media\.invalid|private/);
+
+  const waiting=snapshot({playbackRoute:{preferred_path:'HTML5',active_path:'HTML5',outcome:'preparing',
+    first_frame_ms:null,first_frame_wait_ms:2200,media3_first_frame_ms:null,media3_wait_ms:null}});
+  const waitingRows=Object.fromEntries(diagnostics.report(waiting).rows.map(x=>[x.label,x.value]));
+  assert.match(waitingRows['播放器阶段耗时'],/首帧 2200ms/);
+});

@@ -8,13 +8,65 @@ const appSource = fs.readFileSync(require.resolve('../core/cmd/hongguotv/ui/app.
 const mpvBridgeSource = fs.readFileSync(require.resolve('../android/app/src/mpv/java/rocks/aston/hongguotv/MpvPlayerBridge.java'), 'utf8');
 const mpvTransitionSource = fs.readFileSync(require.resolve('../android/app/src/mpv/java/rocks/aston/hongguotv/MpvTransitionState.java'), 'utf8');
 
-function fixture(engine = 'webview_media3') {
+function FakeClock() {
+  this.time = 10000;
+  this.sequence = 0;
+  this.jobs = [];
+}
+FakeClock.prototype.now = function () { return this.time; };
+FakeClock.prototype.setTimeout = function (callback, delay) {
+  const id = ++this.sequence;
+  this.jobs.push({id, at: this.time + Math.max(0, Number(delay) || 0), callback});
+  return id;
+};
+FakeClock.prototype.clearTimeout = function (id) {
+  this.jobs = this.jobs.filter(job => job.id !== id);
+};
+FakeClock.prototype.advance = function (duration) {
+  const target = this.time + duration;
+  let turns = 0, next;
+  while ((next = this.jobs.filter(job => job.at <= target).sort((a, b) => a.at - b.at || a.id - b.id)[0])) {
+    if (++turns > 1000) throw new Error('fake timer runaway');
+    this.jobs = this.jobs.filter(job => job.id !== next.id);
+    this.time = next.at;
+    next.callback();
+  }
+  this.time = target;
+};
+
+function fixture(engine = 'webview_media3', options = {}) {
   const listeners = {};
+  const frameCallbacks = [];
   const classNames = new Set();
   const rootClassNames = new Set();
+  const clock = new FakeClock();
+  const values = Object.assign({}, options.storage || {});
+  const storage = {
+    getItem(key) { return Object.prototype.hasOwnProperty.call(values, key) ? values[key] : null; },
+    setItem(key, value) { values[key] = String(value); },
+    removeItem(key) { delete values[key]; },
+    values
+  };
+  const nativePreferences = options.nativePreferences || null;
+  const preferenceBridge = nativePreferences ? {
+    readMedia3Preference(version) {
+      const current = nativePreferences.media3;
+      if (!current || current.webview !== version || current.expires_at <= clock.now()) {
+        delete nativePreferences.media3;
+        return '';
+      }
+      return 'media3';
+    },
+    writeMedia3Preference(version, expiresAt) {
+      nativePreferences.media3 = {engine: 'media3', webview: version, expires_at: expiresAt};
+      return true;
+    },
+    clearMedia3Preference() { delete nativePreferences.media3; }
+  } : null;
   const domVideo = {
     src: '', currentSrc: '', currentTime: 0, duration: 0, paused: true, playbackRate: 1, volume: 1, muted: true,
-    readyState: 0, videoWidth: 0, videoHeight: 0,
+    readyState: 0, videoWidth: 0, videoHeight: 0, bufferedEnd: 0,
+    buffered: { get length() { return domVideo.bufferedEnd > 0 ? 1 : 0; }, start() { return 0; }, end() { return domVideo.bufferedEnd; } },
     classList: {
       toggle(name, on) { if (on) classNames.add(name); else classNames.delete(name); },
       contains(name) { return classNames.has(name); }
@@ -23,7 +75,8 @@ function fixture(engine = 'webview_media3') {
     getAttribute() { return null; },
     setAttribute() {},
     removeAttribute() {},
-    load() {},
+    load() { this.readyState = 0; this.currentTime = 0; },
+    requestVideoFrameCallback(callback) { frameCallbacks.push(callback); },
     play() { this.paused = false; return Promise.resolve(); },
     pause() { this.paused = true; }
   };
@@ -51,16 +104,23 @@ function fixture(engine = 'webview_media3') {
     setVolume() {},
     seekTo() {}
   };
+  const window = { HongguoNativePlayer: bridge, addEventListener() {}, location: { origin: options.origin || 'http://127.0.0.1' }, localStorage: storage };
+  if (preferenceBridge) window.HongguoTVPreferences = preferenceBridge;
   const context = vm.createContext({
     document,
-    window: { HongguoNativePlayer: bridge, addEventListener() {}, location: { origin: 'http://127.0.0.1' } },
+    window,
+    navigator: { userAgent: options.userAgent || 'Mozilla/5.0 Chrome/122.0.6261.94' },
     isFinite,
-    setTimeout,
-    clearTimeout,
+    setTimeout: clock.setTimeout.bind(clock),
+    clearTimeout: clock.clearTimeout.bind(clock),
+    Date: { now: clock.now.bind(clock) },
     Promise
   });
   vm.runInContext(source, context);
-  return { context, document, domVideo, listeners, bridge, rootClassNames };
+  return {
+    context, document, domVideo, listeners, bridge, rootClassNames, clock, storage, frameCallbacks,
+    emit(name, event = {type: name, target: domVideo}) { (listeners[name] || []).slice().forEach(listener => listener(event)); }
+  };
 }
 
 function activateNative(f) {
@@ -106,6 +166,229 @@ test('Media3 fallback uses the staged resume position before WebView playback ad
   video.play();
   f.listeners.error[0]({ type: 'error' });
   assert.equal(f.bridge.lastPayload.start_position, 42.5);
+});
+
+test('automatic fallback waits 1.8 seconds only while HTML5 has made no observable progress', async () => {
+  const stalled = fixture(), stalledVideo = stalled.document.getElementById('hero-video');
+  stalledVideo.src = '/media/stalled.mp4';
+  await stalledVideo.play();
+  stalled.clock.advance(1799);
+  assert.equal(stalled.bridge.plays, 0);
+  stalled.clock.advance(1);
+  assert.equal(stalled.bridge.plays, 1);
+  assert.equal(stalled.context.window.HongguoNativePlaybackAdapter.diagnostics().switch_reason, 'zero_progress_timeout');
+
+  const progressing = fixture(), video = progressing.document.getElementById('hero-video');
+  video.src = '/media/progressing.mp4';
+  await video.play();
+  progressing.clock.advance(1500);
+  progressing.domVideo.bufferedEnd = 4;
+  progressing.emit('progress');
+  progressing.clock.advance(1799);
+  assert.equal(progressing.bridge.plays, 0);
+  progressing.clock.advance(1);
+  assert.equal(progressing.bridge.plays, 1);
+});
+
+test('metadata switches the watchdog to a separate 3-second first-frame wait', async () => {
+  const f = fixture(), video = f.document.getElementById('hero-video');
+  video.src = '/media/metadata-only.mp4';
+  await video.play();
+  f.clock.advance(1200);
+  f.domVideo.readyState = 1;
+  f.emit('loadedmetadata');
+  f.emit('playing');
+  f.clock.advance(2999);
+  assert.equal(f.bridge.plays, 0);
+  f.clock.advance(1);
+  assert.equal(f.bridge.plays, 1);
+  assert.equal(f.context.window.HongguoNativePlaybackAdapter.diagnostics().switch_reason, 'first_frame_timeout');
+});
+
+test('metadata and continuing buffered growth keep waiting until progress stops', async () => {
+  const f = fixture(), video = f.document.getElementById('hero-video');
+  video.src = '/media/slow-but-progressing.mp4';
+  await video.play();
+  f.clock.advance(1200);
+  f.domVideo.readyState = 1;
+  f.emit('loadedmetadata');
+  f.clock.advance(1500);
+  f.domVideo.bufferedEnd = 2;
+  f.emit('progress');
+  f.clock.advance(1500);
+  f.domVideo.bufferedEnd = 5;
+  f.emit('progress');
+  f.clock.advance(1799);
+  assert.equal(f.bridge.plays, 0);
+  f.clock.advance(1);
+  assert.equal(f.bridge.plays, 1);
+  assert.equal(f.context.window.HongguoNativePlaybackAdapter.diagnostics().metadata_ms, 1200);
+});
+
+test('HTML5 first frame requires a rendered-frame callback or advancing playback with dimensions', async () => {
+  const f = fixture(), video = f.document.getElementById('hero-video');
+  video.src = '/media/frame.mp4';
+  f.domVideo.readyState = 2;
+  f.domVideo.videoWidth = 640;
+  f.domVideo.videoHeight = 360;
+  await video.play();
+  f.emit('playing');
+  f.domVideo.currentTime = 0.2;
+  f.emit('timeupdate');
+  const route = f.context.window.HongguoNativePlaybackAdapter.diagnostics();
+  assert.equal(route.final_path, 'HTML5');
+  assert.equal(route.final_first_frame, true);
+  f.clock.advance(5000);
+  assert.equal(f.bridge.plays, 0);
+});
+
+test('NotAllowedError and AbortError do not trigger a player switch', async () => {
+  for (const name of ['NotAllowedError', 'AbortError']) {
+    const f = fixture(), video = f.document.getElementById('hero-video');
+    video.src = '/media/rejected.mp4';
+    f.domVideo.play = function () { return Promise.reject(Object.assign(new Error(name), {name})); };
+    await assert.rejects(video.play(), {name});
+    assert.equal(f.bridge.plays, 0);
+  }
+});
+
+test('SecurityError is a non-policy play failure and tries Media3 without caching the route', async () => {
+  const f = fixture(), video = f.document.getElementById('hero-video');
+  video.src = '/media/security-error.mp4';
+  f.domVideo.play = function () { return Promise.reject(Object.assign(new Error('blocked'), {name: 'SecurityError'})); };
+  await video.play();
+  assert.equal(f.bridge.plays, 1);
+  assert.equal(f.context.window.HongguoNativePlaybackAdapter.diagnostics().switch_reason, 'play_rejected');
+  assert.equal(f.storage.getItem('hongguo.native-player.preference.v1'), null);
+});
+
+test('unsupported play rejection switches immediately but stores preference only after a Media3 frame', async () => {
+  const f = fixture(), video = f.document.getElementById('hero-video');
+  video.src = '/media/unsupported.mp4';
+  f.domVideo.play = function () { return Promise.reject(Object.assign(new Error('unsupported'), {name: 'NotSupportedError'})); };
+  await video.play();
+  assert.equal(f.bridge.plays, 1);
+  const key = 'hongguo.native-player.preference.v1';
+  assert.equal(f.storage.getItem(key), null);
+  f.context.window.HongguoNativePlayback.event(f.bridge.lastId, 'frame', {width: 720, height: 1280});
+  const saved = JSON.parse(f.storage.getItem(key));
+  assert.equal(saved.engine, 'media3');
+  assert.equal(saved.webview, '122.0.6261.94');
+  assert.equal(saved.expires_at, f.clock.now() + 30 * 24 * 60 * 60 * 1000);
+  assert.equal(f.context.window.HongguoNativePlaybackAdapter.diagnostics().cache_written, true);
+});
+
+test('a confirmed decode failure caches Media3 for the next source on this WebView installation', async () => {
+  const f = fixture(), video = f.document.getElementById('hero-video');
+  video.src = '/media/decode-failure.mp4';
+  await video.play();
+  f.domVideo.error = {code: 3};
+  f.emit('error');
+  assert.equal(f.bridge.plays, 1);
+  assert.equal(f.storage.getItem('hongguo.native-player.preference.v1'), null);
+  f.context.window.HongguoNativePlayback.event(f.bridge.lastId, 'frame', {width: 720, height: 1280});
+  assert.ok(f.storage.getItem('hongguo.native-player.preference.v1'));
+  video.src = '/media/next.mp4';
+  await video.play();
+  assert.equal(f.bridge.plays, 2);
+  assert.equal(f.context.window.HongguoNativePlaybackAdapter.diagnostics().switch_reason, 'cached_media3');
+});
+
+test('Android native preference survives the changing loopback port and clears after Media3 failure', async () => {
+  const nativePreferences = {};
+  const first = fixture('webview_media3', {nativePreferences, origin: 'http://127.0.0.1:7655'});
+  const firstVideo = first.document.getElementById('hero-video');
+  firstVideo.src = '/media/decode-failure.mp4';
+  await firstVideo.play();
+  first.domVideo.error = {code: 3};
+  first.emit('error');
+  first.context.window.HongguoNativePlayback.event(first.bridge.lastId, 'frame', {width: 720, height: 1280});
+  assert.equal(nativePreferences.media3.webview, '122.0.6261.94');
+  assert.equal(first.storage.getItem('hongguo.native-player.preference.v1'), null);
+
+  const restarted = fixture('webview_media3', {nativePreferences, origin: 'http://127.0.0.1:7841'});
+  const restartedVideo = restarted.document.getElementById('hero-video');
+  restartedVideo.src = '/media/next-process.mp4';
+  await restartedVideo.play();
+  assert.equal(restarted.bridge.plays, 1);
+  assert.equal(restarted.context.window.HongguoNativePlaybackAdapter.diagnostics().switch_reason, 'cached_media3');
+  restarted.context.window.HongguoNativePlayback.event(restarted.bridge.lastId, 'error', {kind: 'decoder'});
+  assert.equal(nativePreferences.media3, undefined);
+});
+
+test('network errors and zero-progress fallback never write a Media3 preference', async () => {
+  const errorCase = fixture(), errorVideo = errorCase.document.getElementById('hero-video');
+  errorVideo.src = '/media/network-error.mp4';
+  await errorVideo.play();
+  errorCase.domVideo.error = {code: 2};
+  errorCase.emit('error');
+  errorCase.context.window.HongguoNativePlayback.event(errorCase.bridge.lastId, 'frame', {width: 640, height: 360});
+  assert.equal(errorCase.storage.getItem('hongguo.native-player.preference.v1'), null);
+
+  const timeoutCase = fixture(), timeoutVideo = timeoutCase.document.getElementById('hero-video');
+  timeoutVideo.src = '/media/no-progress.mp4';
+  await timeoutVideo.play();
+  timeoutCase.clock.advance(1800);
+  timeoutCase.context.window.HongguoNativePlayback.event(timeoutCase.bridge.lastId, 'frame', {width: 640, height: 360});
+  assert.equal(timeoutCase.storage.getItem('hongguo.native-player.preference.v1'), null);
+});
+
+test('cached Media3 preference expires and is invalidated when the WebView version changes', async () => {
+  const key = 'hongguo.native-player.preference.v1';
+  const stale = fixture('webview_media3', {storage: {[key]: JSON.stringify({
+    engine: 'media3', webview: '122.0.6261.94', expires_at: 9999
+  })}});
+  const staleVideo = stale.document.getElementById('hero-video');
+  staleVideo.src = '/media/stale.mp4'; await staleVideo.play();
+  assert.equal(stale.bridge.plays, 0);
+  assert.equal(stale.storage.getItem(key), null);
+
+  const changed = fixture('webview_media3', {userAgent: 'Mozilla/5.0 Chrome/123.0.6312.80', storage: {[key]: JSON.stringify({
+    engine: 'media3', webview: '122.0.6261.94', expires_at: 50000
+  })}});
+  const changedVideo = changed.document.getElementById('hero-video');
+  changedVideo.src = '/media/version-changed.mp4'; await changedVideo.play();
+  assert.equal(changed.bridge.plays, 0);
+  assert.equal(changed.storage.getItem(key), null);
+});
+
+test('Media3 failure returns to HTML5 at the native position without switching a second time', async () => {
+  const f = fixture(), video = f.document.getElementById('hero-video');
+  video.src = '/media/media3-fails.mp4';
+  await video.play();
+  f.domVideo.error = {code: 3};
+  f.emit('error');
+  const id = f.bridge.lastId;
+  f.context.window.HongguoNativePlayback.progress(id, 24500, 90000);
+  f.context.window.HongguoNativePlayback.event(id, 'error', {kind: 'decoder'});
+  assert.equal(f.rootClassNames.has('native-playback'), false);
+  assert.equal(f.domVideo.currentTime, 24.5);
+  assert.equal(f.bridge.plays, 1);
+
+  f.domVideo.error = {code: 3};
+  f.emit('error');
+  assert.equal(f.bridge.plays, 1);
+  assert.equal(f.context.window.HongguoNativePlaybackAdapter.diagnostics().outcome, 'html5_error_decode_error');
+
+  const timeout = fixture(), timeoutVideo = timeout.document.getElementById('hero-video');
+  timeoutVideo.src = '/media/retry-times-out.mp4';
+  await timeoutVideo.play();
+  timeout.clock.advance(1800);
+  const retryId = timeout.bridge.lastId;
+  timeout.context.window.HongguoNativePlayback.event(retryId, 'error', {kind: 'decoder'});
+  timeout.clock.advance(1800);
+  assert.equal(timeout.bridge.plays, 1);
+  assert.equal(timeout.context.window.HongguoNativePlaybackAdapter.diagnostics().outcome, 'html5_retry_zero_progress_timeout');
+});
+
+test('preference is not reused after its WebView version matches only partially', async () => {
+  const key = 'hongguo.native-player.preference.v1';
+  const f = fixture('webview_media3', {userAgent: 'Mozilla/5.0 Chrome/122.0.6261.94', storage: {[key]: JSON.stringify({
+    engine: 'media3', webview: '122.0.6261', expires_at: 50000
+  })}});
+  const video = f.document.getElementById('hero-video');
+  video.src = '/media/exact-version.mp4'; await video.play();
+  assert.equal(f.bridge.plays, 0);
 });
 
 test('native playback failure restores the visible WebView video layer', () => {

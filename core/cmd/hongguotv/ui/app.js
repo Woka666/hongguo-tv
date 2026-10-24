@@ -2527,6 +2527,11 @@
     try { if (window.HongguoTVDiagnostics) device = JSON.parse(window.HongguoTVDiagnostics.readDevice()); } catch (ignored) {}
     var native = {};
     try { if (window.HongguoNativePlayer && window.HongguoNativePlayer.diagnostics) native = JSON.parse(window.HongguoNativePlayer.diagnostics()); } catch (ignoredNative) {}
+    var playbackRoute = null;
+    try {
+      var playbackAdapter = window.HongguoNativePlaybackAdapter;
+      if (playbackAdapter && typeof playbackAdapter.diagnostics === 'function') playbackRoute = playbackAdapter.diagnostics();
+    } catch (ignoredRoute) {}
     // native-player.js replaces getElementById('hero-video') with a media
     // proxy on Android. The proxy exposes media properties, but it is not a
     // DOM Element and old WebViews throw when getComputedStyle receives it.
@@ -2557,6 +2562,7 @@
     var snapshot = {
       device: device || {}, userAgent: environment.userAgent, environmentRows: environment.rows,
       native: native || {},
+      playbackRoute: playbackRoute,
       timing: timingSnapshot,
       capturedAt: ('0' + now.getHours()).slice(-2) + ':' + ('0' + now.getMinutes()).slice(-2) + ':' + ('0' + now.getSeconds()).slice(-2),
       video: readDiagnosticVideo(video),

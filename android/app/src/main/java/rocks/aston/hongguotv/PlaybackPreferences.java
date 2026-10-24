@@ -82,4 +82,33 @@ final class PlaybackPreferences {
             throw new IllegalStateException("playback menu hint state was not saved");
         }
     }
+
+    @JavascriptInterface
+    public String readMedia3Preference(String webviewVersion) {
+        if (!validWebViewVersion(webviewVersion)) return "";
+        String engine = preferences.getString("media3Engine", "");
+        String storedVersion = preferences.getString("media3WebView", "");
+        long expiresAt = preferences.getLong("media3ExpiresAt", 0L);
+        if (engine.isEmpty() && storedVersion.isEmpty() && expiresAt == 0L) return "";
+        if (!Media3RoutePreferencePolicy.matches(engine, storedVersion, webviewVersion, expiresAt, System.currentTimeMillis())) {
+            clearMedia3Preference();
+            return "";
+        }
+        return "media3";
+    }
+
+    @JavascriptInterface
+    public boolean writeMedia3Preference(String webviewVersion, long expiresAt) {
+        long now = System.currentTimeMillis();
+        if (!Media3RoutePreferencePolicy.validWrite(webviewVersion, expiresAt, now)) return false;
+        return preferences.edit().putString("media3Engine", "media3")
+                .putString("media3WebView", webviewVersion).putLong("media3ExpiresAt", expiresAt).commit();
+    }
+
+    @JavascriptInterface
+    public void clearMedia3Preference() {
+        if (!preferences.edit().remove("media3Engine").remove("media3WebView").remove("media3ExpiresAt").commit()) {
+            throw new IllegalStateException("Media3 preference was not cleared");
+        }
+    }
 }
