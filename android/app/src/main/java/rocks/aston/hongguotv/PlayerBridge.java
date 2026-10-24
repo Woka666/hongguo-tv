@@ -55,7 +55,7 @@ final class PlayerBridge implements NativePlayerAdapter {
     private volatile String diagnostic="{}";
     private JSONObject diagnosticFields=new JSONObject();
     private ExoPlayer player;
-    private boolean playerCompatibility, playerPcmAudio, playerLive;
+    private boolean playerCompatibility, playerPcmAudio, playerLive, playerForceSoftwareHevc;
     private Map<String,String> playerHeaders=Collections.emptyMap();
     private Session session;
     private long nextSessionGeneration;
@@ -89,6 +89,8 @@ final class PlayerBridge implements NativePlayerAdapter {
         int candidate;
         boolean wantsPlay = true, firstFrame;
         long position;
+        boolean triedSoftwareHevcFallback;
+        boolean forceSoftwareHevc;
         Session(long generation, String id, List<String> urls, Map<String,String> headers,boolean live,boolean compatibility) {
             this.generation=generation;this.id=id;this.urls=urls;this.headers=headers;this.live=live;this.compatibility=compatibility;
             pcmAudio=PlaybackCodecPolicy.pcmAudio(compatibility,live,Build.VERSION.SDK_INT);
@@ -171,7 +173,7 @@ final class PlayerBridge implements NativePlayerAdapter {
         handler.postDelayed(timeout,25000);
     }
     private ExoPlayer ensurePlayer(Session target) {
-        if(player!=null&&playerCompatibility==target.compatibility&&playerPcmAudio==target.pcmAudio&&playerLive==target.live&&playerHeaders.equals(target.headers))return player;
+        if(player!=null&&playerCompatibility==target.compatibility&&playerPcmAudio==target.pcmAudio&&playerLive==target.live&&playerHeaders.equals(target.headers)&&playerForceSoftwareHevc==target.forceSoftwareHevc)return player;
         releasePlayer();
         final Session configuredTarget=target;
         DefaultHttpDataSource.Factory source=new DefaultHttpDataSource.Factory()
@@ -191,10 +193,13 @@ final class PlayerBridge implements NativePlayerAdapter {
                 List<MediaCodecInfo> choices=new ArrayList<>();
                 List<MediaCodecInfo> software=new ArrayList<>();
                 List<MediaCodecInfo> hardware=new ArrayList<>();
-                for(MediaCodecInfo info:MediaCodecSelector.DEFAULT.getDecoderInfos(mime,secure,tunnel))
+                for(MediaCodecInfo info:MediaCodecSelector.DEFAULT.getDecoderInfos(mime,secure,tunnel)) {
+                    if(PlaybackCodecPolicy.excludesDecoderForSoftwareHevc(
+                            configuredTarget.forceSoftwareHevc, mime, info.name))continue;
                     if(PlaybackCodecPolicy.allowsInMode(mime,info.name,configuredTarget.compatibility||configuredTarget.pcmAudio&&"audio/mp4a-latm".equals(mime))) {
                         if(PlaybackCodecPolicy.platformSoftware(info.name)) software.add(info); else hardware.add(info);
                     }
+                }
                 if(PlaybackCodecPolicy.preferSoftware(mime,Build.VERSION.SDK_INT)) {
                     choices.addAll(software); choices.addAll(hardware);
                 } else {
@@ -212,12 +217,24 @@ final class PlayerBridge implements NativePlayerAdapter {
                 .setBackBuffer(0,false).build());
         }
         ExoPlayer active=builder.build();
-        player=active;playerCompatibility=target.compatibility;playerPcmAudio=target.pcmAudio;playerLive=target.live;playerHeaders=new HashMap<>(target.headers);
+        player=active;playerCompatibility=target.compatibility;playerPcmAudio=target.pcmAudio;playerLive=target.live;playerForceSoftwareHevc=target.forceSoftwareHevc;playerHeaders=new HashMap<>(target.headers);
         if(surface!=null)active.setVideoSurfaceView(surface);else active.setVideoTextureView(texture);
         active.setPlaybackParameters(PlaybackParameters.DEFAULT);
         active.setVolume(requestedMuted ? 0 : requestedVolume);
         active.addAnalyticsListener(new AnalyticsListener(){
-            private void decoder(String field,String name){Session current=session;if(current!=null&&player==active&&currentMediaMatches(current)){try{diagnosticFields.put(field,name);}catch(Exception ignored){}updateDiagnostic(current,"preparing");saveDiagnostic();}}
+            private void decoder(String field,String name){
+                Session current=session;
+                if(current==null||player!=active||!currentMediaMatches(current))return;
+                try{
+                    diagnosticFields.put(field,name);
+                    Format video=active.getVideoFormat();
+                    if("video_decoder".equals(field)&&configuredTarget.forceSoftwareHevc&&video!=null
+                            &&MimeTypes.VIDEO_H265.equals(video.sampleMimeType)&&PlaybackCodecPolicy.platformSoftware(name)){
+                        diagnosticFields.put("hevc_software_retry","initialized");
+                    }
+                }catch(Exception ignored){}
+                updateDiagnostic(current,"preparing");saveDiagnostic();
+            }
             @Override public void onVideoDecoderInitialized(AnalyticsListener.EventTime time,String name,long timestamp,long duration){decoder("video_decoder",name);}
             @Override public void onAudioDecoderInitialized(AnalyticsListener.EventTime time,String name,long timestamp,long duration){decoder("audio_decoder",name);}
         });
@@ -228,6 +245,13 @@ final class PlayerBridge implements NativePlayerAdapter {
                 if(current())recordTrackDiagnostics(current,tracks);
                 if(current()&&!tracks.getGroups().isEmpty()&&!tracks.isTypeSelected(C.TRACK_TYPE_VIDEO)){
                     fail(current,"decoder",PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED);
+                    return;
+                }
+                // One-time HEVC software decoder fallback for FORMAT_EXCEEDS_CAPABILITIES
+                // Only trigger if we haven't rendered first frame yet (to avoid interrupting working playback)
+                if(current()&&PlaybackCodecPolicy.shouldRetryHevcSoftwareFallback(
+                        hasExceedsCapabilitiesHevc(tracks), current.firstFrame, current.triedSoftwareHevcFallback)){
+                    retrySoftwareHevc(current);
                 }
             }
             @Override public void onVideoSizeChanged(VideoSize size){if(current()){videoWidth=size.width;videoHeight=size.height;pixelRatio=size.pixelWidthHeightRatio;fit();}}
@@ -288,6 +312,50 @@ final class PlayerBridge implements NativePlayerAdapter {
             else diagnosticFields.remove("unselected_hevc");
         }catch(Exception ignored){}
         updateDiagnostic(target,diagnosticFields.optString("state","preparing"));saveDiagnostic();
+    }
+    private boolean hasExceedsCapabilitiesHevc(Tracks tracks){
+        for(Tracks.Group group:tracks.getGroups()){
+            if(group.getType()!=C.TRACK_TYPE_VIDEO)continue;
+            for(int i=0;i<group.length;i++){
+                if(!group.isTrackSelected(i))continue;
+                Format format=group.getTrackFormat(i);
+                if(MimeTypes.VIDEO_H265.equals(format.sampleMimeType)&&group.getTrackSupport(i)==C.FORMAT_EXCEEDS_CAPABILITIES){
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+    private void retrySoftwareHevc(Session target){
+        if(session!=target||destroyed||target.triedSoftwareHevcFallback)return;
+        // Check if software HEVC decoder is available
+        boolean hasSoftwareHevc=false;
+        try{
+            for(MediaCodecInfo info:MediaCodecSelector.DEFAULT.getDecoderInfos(MimeTypes.VIDEO_H265,false,false)){
+                if(PlaybackCodecPolicy.platformSoftware(info.name)){
+                    hasSoftwareHevc=true;
+                    break;
+                }
+            }
+        }catch(Exception ignored){}
+        if(!hasSoftwareHevc){
+            // No software HEVC decoder available, let the normal error path handle it
+            return;
+        }
+        clearTimeout();
+        target.triedSoftwareHevcFallback=true;
+        target.forceSoftwareHevc=true;
+        if(player!=null&&!target.live)target.position=Math.max(target.position,Math.max(0,player.getCurrentPosition()));
+        // Drop data from the hardware attempt; video_decoder is populated only
+        // when Media3 confirms which decoder the retry actually initialized.
+        try{
+            for(String key:new String[]{"video_decoder","audio_decoder","video_track","track_support",
+                    "track_selected","video_track_count","unselected_hevc","video_mime","audio_mime",
+                    "sample_rate","channels"})diagnosticFields.remove(key);
+            diagnosticFields.put("hevc_software_retry","requested");
+        }catch(Exception ignored){}
+        // Restart with software HEVC only
+        startCandidate(target);
     }
     private static String supportName(int support){
         switch(support){
