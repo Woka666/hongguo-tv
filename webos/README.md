@@ -18,9 +18,11 @@
 
 协议、解密和媒体文件已在 macOS 网络环境中用真实上游数据验证。优先使用 Range/CENC 按需读取；缺少强 ETag 等条件时仍安全回退到完整下载后解密，不会将失败的预取变为整集后台下载。磁盘缓存具有 512 MiB 总预算、2 小时闲置清理和播放占用保护，详见 [缓存策略](../docs/webos-media-cache.md)。
 
-2026-10-25 已在重新安装的 LG Simulator 中通过 HTTP 直连播放真实红果第 1、2 集、方向键切集及 seek，加载层退出、静音解除。缓存另有真实视频暂停期间容量清理和恢复播放验证。电视端 Luna IPC 与 LG 真机仍未验证，因此 `playback_verified` 不据此标为真机通过；记录见 [Issue #55 修复与验证](../docs/webos-issue55-playback.md)。
+2026-10-25，用户在 [Issue #57](https://github.com/aston314/hongguo-tv-releases/issues/57) 回报 LG OLED65C5PTA（台湾版，固件 43.21.77、webOS SDK 11.2.0）安装 `hongguo-webos-0.2.117-test.25.ipk` 后，安装、启动、1080P 视频画面、声音、账号登录及原生遥控器滚轮均正常。安装方式为 Developer Mode + webOS Dev Manager 1.99.20，网络为台湾 Wi-Fi。
 
-webOS Service 已接入账号登录、国际手机号发码/MFA、预约、追更、通知、评论/弹幕/回复发布、点赞以及云端收藏/历史同步。账号态写入仍需要真实红果账号验收；未登录时会按接口契约返回 `ACCOUNT_REQUIRED`，不会伪造成功结果。当前版本仍是实验版，真实 LG 电视播放和账号写入结果不能仅凭 macOS 或 Simulator 推断。
+另已在重新安装的 LG Simulator 中通过 HTTP 直连播放真实红果第 1、2 集、方向键切集及 seek，加载层退出、静音解除。缓存还有真实视频暂停期间容量清理和恢复播放验证；记录见 [Issue #55 修复与验证](../docs/webos-issue55-playback.md)。
+
+webOS Service 已接入账号登录、国际手机号发码/MFA、预约、追更、通知、评论/弹幕/回复发布、点赞以及云端收藏/历史同步。登录已有上述真机回报；预约、追更等账号写入尚需逐项补充验收，未登录时按接口契约返回 `ACCOUNT_REQUIRED`。当前版本仍是测试版，其他电视型号欢迎继续反馈。
 
 ## 构建
 
@@ -53,5 +55,5 @@ ARES_DIR="$HOME/.local/webos" bash scripts/build_webos.sh
 
 1. 在 macOS 上运行 `bash scripts/verify_webos.sh`，并使用真实上游完成公共接口验收；
 2. 在 webOS Simulator 中验证服务唤醒、首页列表、搜索、详情和连续播放；
-3. 在至少一台 LG 真机验证 HTTP Service、HEVC/AAC 解码、Range 播放和遥控器焦点；
-4. 当前公开 IPK 仅供社区真机验证，不是稳定版。只有账号态接口和 LG 真机结果都明确后，才能将 webOS 标为正式支持。
+3. 已有 LG OLED65C5PTA 真机安装、启动、1080P 播放、声音、登录和遥控器滚轮验证；继续补充其他型号、Range/seek、焦点路径及账号写入结果；
+4. 当前公开 IPK 保持测试版渠道，明确记录已验证功能及设备。
