@@ -58,10 +58,17 @@ jobs:
           GH_TOKEN: ${{ secrets.HONGGUO_RELEASES_TOKEN }}
         run: |
           test -n "$GH_TOKEN" || { echo "Missing HONGGUO_RELEASES_TOKEN" >&2; exit 1; }
-          gh release create "${{ steps.release.outputs.tag }}" \
-            "${{ steps.release.outputs.asset }}" \
-            "dist/webos/SHA256SUMS.txt" \
-            --repo aston314/hongguo-tv-releases \
-            --title "红果短剧 webOS 测试版 ${{ steps.release.outputs.version }}" \
-            --prerelease \
-            --notes-file docs/webos-release.md
+          if ! gh release view "${{ steps.release.outputs.tag }}" --repo aston314/hongguo-tv-releases >/dev/null 2>&1; then
+            gh release create "${{ steps.release.outputs.tag }}" \
+              "${{ steps.release.outputs.asset }}" \
+              "dist/webos/SHA256SUMS.txt" \
+              --repo aston314/hongguo-tv-releases \
+              --title "红果短剧 webOS 测试版 ${{ steps.release.outputs.version }}" \
+              --prerelease \
+              --notes-file docs/webos-release.md
+          fi
+          python3 scripts/publish_webos_update.py \
+            --ipk "${{ steps.release.outputs.asset }}" \
+            --version "${{ steps.release.outputs.version }}" \
+            --notes docs/webos-release.md \
+            --out "$RUNNER_TEMP/webos-update.json" --publish

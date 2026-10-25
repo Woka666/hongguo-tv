@@ -5,6 +5,14 @@
   // without changing the UI or the focus model.
   root.HongguoLocales = root.HongguoLocales || {};
   root.HongguoLocales['zh-CN'] = {
+    "ui.webosUpdateDetails": "更新说明与手动安装方法",
+    "ui.webosUpdateIdle": "每天检查一次新版本；请使用 webOS Dev Manager 手动安装。",
+    "ui.webosUpdateFailed": "检查更新失败，请重试；正常使用不受影响。",
+    "ui.webosUpdateCurrent": "当前已是最新版本。webOS 更新需手动安装。",
+    "ui.webosUpdateAvailable": "发现新版本 {version}，请使用 webOS Dev Manager 手动安装。",
+    "ui.webosUpdateNotice": "发现 webOS 新版本 {version}，可在设置中查看安装说明。",
+    "ui.webosInstallGuide": "请在电脑上打开以下发布页面，下载 IPK 后使用 webOS Dev Manager 手动安装：",
+
     'app.name': '红果短剧',
     'nav.recommend': '推荐',
     'nav.search': '找剧',

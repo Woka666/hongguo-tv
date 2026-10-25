@@ -100,6 +100,9 @@ def main():
             fail("service factory is missing from package")
         if service_root + "/media-cache.js" not in names:
             fail("media cache policy is missing from package")
+        for name in ("updates.js", "update-manifest.js"):
+            if service_root + "/" + name not in names:
+                fail("webOS update checker is missing from package")
         if any(name.endswith(".test.js") for name in names):
             fail("test harness files must not be packaged")
         entry_stream = package.extractfile(service_path)
@@ -112,6 +115,9 @@ def main():
         adapter = app_root + "/webos-adapter.js"
         if adapter not in names:
             fail("webOS adapter is missing from package")
+        for name in ("webos-updates.js", "webos-update-manifest.js"):
+            if app_root + "/" + name not in names or index.find(name) < 0 or index.find(name) > index.find('src="./webos-adapter.js"'):
+                fail("webOS update bridge must load before adapter")
         webos_tv = app_root + "/webOSTVjs-1.2.13/webOSTV.js"
         if webos_tv not in names:
             fail("official webOSTV.js library is missing from package")

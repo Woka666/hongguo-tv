@@ -16,6 +16,7 @@
     var provider = options.provider || require('./provider');
     var account = options.account || require('./account')({ dataDir: provider.dataDirectory ? provider.dataDirectory() : process.env.HONGGUO_WEBOS_DATA_DIR });
     var numberInput = options.numberInput || require('./number-input')();
+    var updates = options.updates || require('./updates')();
     var port = options.port === undefined ? Number(process.env.HONGGUO_WEBOS_PORT) || DEFAULT_PORT : options.port;
     var bindHost = options.bindHost || process.env.HONGGUO_WEBOS_BIND_HOST || '127.0.0.1';
     var server = null;
@@ -131,6 +132,10 @@
     function handleProvider(req, res, pathName) {
       var q = query(req);
       if (!supportedMethod(req)) return json(res, 405, { ok: false, error: 'METHOD_NOT_ALLOWED' }, req);
+      if (pathName === '/api/v1/webos/update') {
+        if (req.method !== 'GET' && req.method !== 'HEAD') return json(res, 405, { ok: false, error: 'METHOD_NOT_ALLOWED' }, req);
+        return updates.check().then(function (result) { data(req, res, result); }, function (error) { failure(req, res, error); });
+      }
       if (pathName === '/api/v1/player/cache-session') {
         if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'METHOD_NOT_ALLOWED' }, req);
         return bodyJSON(req, 1024).then(function (body) { return provider.cacheSession(body); }).then(function (result) { data(req, res, result); }, function (error) { failure(req, res, error); });

@@ -54,6 +54,7 @@
     accountKeypad: '.account-keypad-key',
     accountActions: '.account-action',
     appUpdates: '.app-update-action',
+    webosUpdateNotes: '.webos-update-notes',
     localeActions: '.locale-action',
     sidebarDisplay: '.sidebar-display-action',
     autoCinema: '.auto-cinema-action',
@@ -1102,6 +1103,7 @@
     if (element.classList.contains('library-remove')) return 'libraryRemovals';
     if (element.classList.contains('account-input')) return 'accountInputs';
     if (element.classList.contains('app-update-action')) return 'appUpdates';
+    if (element.classList.contains('webos-update-notes')) return 'webosUpdateNotes';
     if (element.classList.contains('locale-action')) return 'localeActions';
     if (element.classList.contains('sidebar-display-action')) return 'sidebarDisplay';
     if (element.classList.contains('auto-cinema-action')) return 'autoCinema';
@@ -1628,8 +1630,13 @@
     if (zone === 'appUpdates') {
       if (direction === 'left' || direction === 'right') return moveWithinZone(zone, current, direction) || (direction === 'left' ? activeSidebar() : null);
       if (direction === 'up') return firstVisible('.auto-cinema-action') || firstVisible('.locale-action[aria-pressed="true"]') || firstVisible('.locale-action') || selectedSidebarDisplay() || activeSidebar();
-      if (direction === 'down') return firstVisible('.playback-mode-action[aria-pressed="true"]') || firstVisible('.playback-mode-action');
+      if (direction === 'down') return firstVisible('.webos-update-notes') || firstVisible('.playback-mode-action[aria-pressed="true"]') || firstVisible('.playback-mode-action');
       return null;
+    }
+    if (zone === 'webosUpdateNotes') {
+      if (direction === 'left' || direction === 'up' && current.scrollTop <= 1) return document.getElementById('app-check-update');
+      if (direction === 'up' || direction === 'down') current.scrollTop += (direction === 'up' ? -1 : 1) * Math.max(80, Math.floor(current.clientHeight * 0.65));
+      return current;
     }
     if (zone === 'autoCinema') {
       if (direction === 'left' || direction === 'right') return moveWithinZone(zone, current, direction) || (direction === 'left' ? activeSidebar() : null);
@@ -7750,7 +7757,21 @@
       // Keep the active TV focus node alive while native checking/download runs.
       check.disabled = !data.supported;
       check.setAttribute('aria-disabled', data.state === 'checking' || data.state === 'downloading' || data.state === 'installing' ? 'true' : 'false');
-      check.textContent = data.state === 'checking' ? uiText('ui.checking', '检查中…') : !data.desktop && data.state === 'ready' ? uiText('ui.installUpdate', '安装更新') : !data.desktop && data.state === 'available' ? uiText('ui.viewUpdate', '查看更新 {version}', { version: data.latest_version }) : uiText('ui.checkUpdate', '检查更新');
+      check.textContent = data.state === 'checking' ? uiText('ui.checking', '检查中…') : data.manual_install ? uiText('ui.checkUpdate', '检查更新') : !data.desktop && data.state === 'ready' ? uiText('ui.installUpdate', '安装更新') : !data.desktop && data.state === 'available' ? uiText('ui.viewUpdate', '查看更新 {version}', { version: data.latest_version }) : uiText('ui.checkUpdate', '检查更新');
+      if (webosShell && data.manual_install) {
+        var webosNotes = document.getElementById('desktop-update-notes');
+        webosNotes.classList.toggle('is-hidden', !data.latest_version);
+        webosNotes.classList.add('webos-update-notes');
+        webosNotes.setAttribute('tabindex', data.latest_version ? '0' : '-1');
+        webosNotes.setAttribute('data-focus', 'webos-update-notes');
+        webosNotes.setAttribute('aria-label', uiText('ui.webosUpdateDetails', '更新说明与手动安装方法'));
+        var webosNotesText = data.latest_version ? uiText('ui.releaseVersion', '版本 {version}', { version: data.latest_version }) + '\n\n' + uiText('ui.webosInstallGuide', '请在电脑上打开以下发布页面，下载 IPK 后使用 webOS Dev Manager 手动安装：') + '\n' + data.release_url + '\n\n' + data.release_notes : '';
+        if (webosNotes.textContent !== webosNotesText) webosNotes.textContent = webosNotesText;
+        if (data.state === 'available' && data.prompt_allowed && !data.notified && canShowAppUpdate()) {
+          showNotice(uiText('ui.webosUpdateNotice', '发现 webOS 新版本 {version}，可在设置中查看安装说明。', { version: data.latest_version }));
+          window.HongguoTVUpdates.markNotified(data.latest_version);
+        }
+      }
       if (data.desktop) {
         var downloading = data.state === 'downloading';
         var download = document.getElementById('desktop-download-update');

@@ -53,6 +53,8 @@ mkdir -p "$app_stage" "$service_stage"
 cp -R "$repo_dir/core/cmd/hongguotv/ui/." "$app_stage/"
 cp "$repo_dir/webos/appinfo.json" "$app_stage/appinfo.json"
 cp "$repo_dir/webos/app/webos-adapter.js" "$app_stage/webos-adapter.js"
+cp "$repo_dir/webos/app/webos-updates.js" "$app_stage/webos-updates.js"
+cp "$repo_dir/webos/service/update-manifest.js" "$app_stage/webos-update-manifest.js"
 node - "$app_stage/webos-adapter.js" "$app_stage/appinfo.json" <<'NODE'
 var fs = require('fs');
 var adapterPath = process.argv[2];
@@ -73,6 +75,7 @@ cp -R "$repo_dir/webos/service/." "$service_stage/"
 # exercised by CI; do not ship them in the TV service package.
 rm -f "$service_stage/passport-sign.test.js" "$service_stage/provider.test.js" "$service_stage/account.test.js" "$service_stage/service.test.js" "$service_stage/service-entry.test.js" "$service_stage/number-input.test.js" "$service_stage/range-media.test.js"
 rm -f "$service_stage/media-cache.test.js"
+rm -f "$service_stage/updates.test.js"
 
 # A file:// document cannot resolve the shared UI's root-absolute assets.
 index="$app_stage/index.html"
@@ -81,7 +84,7 @@ sed -i.bak \
   -e 's#href="/#href="./#g' \
   "$index"
 rm -f "$index.bak"
-sed -i.bak 's#<script src="./compat.js"></script>#<script src="./webOSTVjs-1.2.13/webOSTV.js"></script><script src="./webos-adapter.js"></script><script src="./compat.js"></script>#' "$index"
+sed -i.bak 's#<script src="./compat.js"></script>#<script src="./webOSTVjs-1.2.13/webOSTV.js"></script><script src="./webos-update-manifest.js"></script><script src="./webos-updates.js"></script><script src="./webos-adapter.js"></script><script src="./compat.js"></script>#' "$index"
 rm -f "$index.bak"
 
 if [ -n "$stage_output" ]; then

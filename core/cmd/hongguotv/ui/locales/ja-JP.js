@@ -2,6 +2,14 @@
   'use strict';
   root.HongguoLocales = root.HongguoLocales || {};
   root.HongguoLocales['ja-JP'] = {
+    "ui.webosUpdateDetails": "更新内容と手動インストール方法",
+    "ui.webosUpdateIdle": "新しいバージョンを毎日確認します。webOS Dev Manager で手動インストールしてください。",
+    "ui.webosUpdateFailed": "更新の確認に失敗しました。再試行できます。通常の利用には影響しません。",
+    "ui.webosUpdateCurrent": "最新バージョンです。webOS の更新は手動でインストールします。",
+    "ui.webosUpdateAvailable": "新しいバージョン {version} があります。webOS Dev Manager で手動インストールしてください。",
+    "ui.webosUpdateNotice": "webOS の新しいバージョン {version} があります。設定からインストール方法を確認できます。",
+    "ui.webosInstallGuide": "パソコンで次のリリースページを開き、IPK をダウンロードして webOS Dev Manager で手動インストールしてください：",
+
   "app.name": "Hongguoショートドラマ",
   "nav.recommend": "おすすめ",
   "nav.search": "ドラマ検索",

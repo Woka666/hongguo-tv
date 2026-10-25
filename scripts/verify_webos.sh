@@ -6,6 +6,7 @@ node_bin=${NODE:-node}
 
 "$node_bin" --check "$repo_dir/scripts/run_webos_http_direct_service.js"
 "$node_bin" --check "$repo_dir/webos/service/range-media.js"
+"$node_bin" --check "$repo_dir/webos/app/webos-updates.js"
 
 "$node_bin" - "$repo_dir" <<'NODE'
 var fs = require('fs');
@@ -61,6 +62,7 @@ NODE
 "$node_bin" "$repo_dir/webos/service/passport-sign.test.js"
 "$node_bin" "$repo_dir/webos/service/provider.test.js"
 "$node_bin" "$repo_dir/webos/service/media-cache.test.js"
+"$node_bin" "$repo_dir/webos/service/updates.test.js"
 "$node_bin" "$repo_dir/webos/service/range-media.test.js"
 "$node_bin" "$repo_dir/webos/service/account.test.js"
 "$node_bin" "$repo_dir/webos/service/service-entry.test.js"

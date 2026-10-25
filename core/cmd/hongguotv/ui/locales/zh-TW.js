@@ -2,6 +2,14 @@
   'use strict';
   root.HongguoLocales = root.HongguoLocales || {};
   root.HongguoLocales['zh-TW'] = {
+    "ui.webosUpdateDetails": "更新說明與手動安裝方法",
+    "ui.webosUpdateIdle": "每天檢查一次新版本；請使用 webOS Dev Manager 手動安裝。",
+    "ui.webosUpdateFailed": "檢查更新失敗，請重試；正常使用不受影響。",
+    "ui.webosUpdateCurrent": "目前已是最新版本。webOS 更新需手動安裝。",
+    "ui.webosUpdateAvailable": "發現新版本 {version}，請使用 webOS Dev Manager 手動安裝。",
+    "ui.webosUpdateNotice": "發現 webOS 新版本 {version}，可在設定中查看安裝說明。",
+    "ui.webosInstallGuide": "請在電腦上開啟以下發布頁面，下載 IPK 後使用 webOS Dev Manager 手動安裝：",
+
   "app.name": "紅果短劇",
   "nav.recommend": "推薦",
   "nav.search": "找劇",
