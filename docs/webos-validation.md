@@ -45,6 +45,8 @@ Service 的 `package.json` 使用 `service-entry.js` 作为入口；电视通过
 
 ## Simulator 准备
 
+Simulator 安装目录建议置于 `~/Applications/webOS-Simulator/` 等持久目录，不放在 `/tmp`。若启动报 `Unable to find helper app`，先检查主应用及 Helper 的 `Contents/Info.plist` 是否齐全，并用 `codesign --verify --deep --strict <Simulator.app>` 检查原安装。缺失文件时应重新安装厂商完整包，不手工伪造应用元数据。
+
 先确保 webOS Simulator 已安装并能正常启动。每次运行使用新的 staging 目录；构建脚本要求该目录位于当前用户主目录内，而且目标目录必须尚不存在：
 
 ```sh
@@ -113,6 +115,7 @@ python3 scripts/verify_webos_simulator_playback.py "$HOME/webos-simulator/honggu
 
 ## 当前记录
 
+- **Issue #55，2026-10-25，修复源码 `e9629a4`：Simulator HTTP 直连播放通过。** 重新安装 LG Simulator 1.5.0 后，真实剧集第一、二集、seek、方向键切集及画面/加载层/静音检查通过，音频解码字节增长；使用独立 staging 和开发机服务。Luna IPC 与 LG 真机仍未验证。安装来源、测量值和证据位置见 [Issue #55 验证记录](webos-issue55-playback.md)。
 - **run8，2026-10-21，源码版本 0.2.99，基于 HEAD `5835552533ab89676c4c2ff8804cddc0dcd7441e` 加当前工作区改动。** 本次构建的是独立测试包，不是正式发布包。
 - **API 接入审计：通过。** Service 回归测试遍历 Go 主应用注册的 API 路由，要求没有 404、501 或 `WEBOS_PROVIDER_NOT_IMPLEMENTED`。真实 API smoke 对推荐 16/36/39、三类分类、新剧、榜单、搜索/建议、日历、详情/分季、演员作品、互动、评论/弹幕/回复和雷达共 22 项返回预期 200；频道 45 未登录返回 401 `ACCOUNT_REQUIRED`，与主应用一致。频道 45 已接入账号签名请求、只取 `show_type=648` 追更 cell 和后续分页；fixture 验证覆盖 647 演员 cell 排除。真实登录态频道 45 尚未用账号验收。
 - **HTTP 直连包：构建及包结构通过，Simulator 未验证。** IPK：`/Users/aston/webos-simulator-validation-20261021-run8-http/test-ipk/com.aston314.hongguo.webos.run8-http_0.2.99_all.ipk`。此 staging 的 `SERVICE_MODE=http-direct`、开发机地址 `192.168.2.124:17659` 和报告地址 `192.168.2.124:17662` 只写入该测试包。开发机 HTTP Service 的 LAN health 返回 200，真实 HTTP API smoke 已执行。尝试 `ares-install --device emulator` 时连接 `127.0.0.1:6622` 返回 `ECONNREFUSED`，所以还没有 Simulator 安装、页面或网络访问结果。
