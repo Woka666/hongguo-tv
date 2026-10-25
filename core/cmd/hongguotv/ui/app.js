@@ -4389,11 +4389,17 @@
     presentation.revealTimer = null;
     document.getElementById('hero').classList.remove('is-native-frame-revealing');
   }
+  function samePlaybackPresentationSource(actual, expected) {
+    if (typeof window !== 'undefined' && window.HongguoWebOS && typeof window.HongguoWebOS.sameMediaSource === 'function') {
+      return window.HongguoWebOS.sameMediaSource(actual, expected);
+    }
+    return actual === expected;
+  }
   function currentPlaybackPresentation(playback, presentation, video) {
     return !!(playback && presentation && activePlayback === playback && playback.presentation === presentation &&
       playback.generation === feedGeneration && playback.owner === accountEpoch && isPlaybackPage() &&
       !applicationInBackground && !applicationHidden() && !presentation.failed &&
-      video.classList.contains('has-source') && video.getAttribute('src') === presentation.source);
+      video.classList.contains('has-source') && samePlaybackPresentationSource(video.getAttribute('src'), presentation.source));
   }
   function playbackVideoReady(playback, presentation, video) {
     return !!(currentPlaybackPresentation(playback, presentation, video) && !presentation.waiting &&

@@ -37,10 +37,19 @@
     return typeof value === 'string' && value.indexOf(SERVICE_BASE) === 0;
   }
 
+  function sameMediaSource(actual, expected) {
+    function absolute(value) {
+      return value.indexOf('/minireel-proxy/media/') === 0 ? SERVICE_BASE + value : value;
+    }
+    return typeof actual === 'string' && typeof expected === 'string' &&
+      actual !== '' && expected !== '' && absolute(actual) === absolute(expected);
+  }
+
   window.HongguoWebOS = {
     platform: 'webos',
     serviceBase: SERVICE_BASE,
     serviceMode: SERVICE_MODE,
+    sameMediaSource: sameMediaSource,
     appVersion: '',
     experimental: true,
     playbackVerified: false,

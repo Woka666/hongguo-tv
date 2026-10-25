@@ -64,6 +64,11 @@ if min(second_b.get("videoWidth", 0), second_b.get("videoHeight", 0)) <= 0:
     fail("episode 2 has no decoded video dimensions")
 if any(item.get("mediaError", 0) for item in report.get("steps", [])):
     fail("HTMLMediaElement reported a playback error")
+for item in (first_b, second_b):
+    if item.get("visible") is not True or item.get("loading") is not False:
+        fail("video is hidden or still covered by its loading state")
+    if item.get("muted") is not False:
+        fail("playback audio is still muted")
 
 print("webOS Simulator playback verification: PASS")
 print("platform: webOS TV 26 Simulator (not an LG TV)")

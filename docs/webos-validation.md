@@ -29,6 +29,7 @@ node webos/service/passport-sign.test.js
 node webos/service/provider.test.js
 node webos/service/account.test.js
 node webos/service/service.test.js
+node webos/service/service-entry.test.js
 node webos/service/number-input.test.js
 ```
 
@@ -38,7 +39,9 @@ node webos/service/number-input.test.js
 python3 scripts/verify_webos_ipk.py dist/webos/<生成的安装包>.ipk
 ```
 
-这只是包结构检查，不是 Simulator 或电视播放证明。
+Service 的 `package.json` 使用 `service-entry.js` 作为入口；电视通过 bootstrap 的 `require()` 加载该文件时会立即注册 Luna 方法。`service.js` 仍是可注入的工厂，供单测与 HTTP 直连启动器使用；不能再把生产入口绑定到 `require.main === module`。
+
+包校验也检查该入口和工厂同时存在。这只是包结构检查，不是 Simulator 或电视播放证明。
 
 ## Simulator 准备
 
@@ -87,7 +90,7 @@ node scripts/webos_simulator_report_server.js "$HOME/webos-simulator/hongguo-run
 4. Luna 测试使用另一个独立 staging 包，保持 `SERVICE_MODE=luna`、`SERVICE_BASE=http://127.0.0.1:7655`，并加载同一 staging 的 Service。只有 Console 中 `window.HongguoWebOS.getDiagnostic()` 返回 `code: READY` 且消息包含 Luna 成功，才能记录 Luna 通过；HTTP health 单独记录 200/`ready: true`。
 5. 在每层记录 app ID、Service ID、模式、健康检查结果和实际 API 请求；HTTP 直连通过不能替代 Luna 通过。
 6. 检查真实数据页面：推荐/分类、排行榜、搜索及建议、详情和演员/分季。记录请求路径、HTTP 状态、列表条数和页面结果；不要记录手机号、Cookie、签名头、播放 URL 或密钥。
-7. 播放验收再单独进行：探针报告需要显示 `play/info` 两集成功、视频宽高有效、解码或呈现帧增长、播放时钟持续前进、seek 完成、方向键切至第二集后时钟继续前进，并且没有 `MediaError`。
+7. 播放验收再单独进行：探针报告需要显示 `play/info` 两集成功、视频宽高有效、解码或呈现帧增长、播放时钟持续前进、seek 完成、方向键切至第二集后时钟继续前进，并且没有 `MediaError`。两集稳定播放时还必须满足 `visible=true`、`loading=false`、`muted=false`，避免后台播放但画面仍被加载层遮住或没有解除静音的误判。音频解码字节可作辅助信息，不能代替实体扬声器验收。
 
 探针生成报告后，在仓库根目录运行：
 

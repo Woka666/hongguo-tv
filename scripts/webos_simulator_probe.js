@@ -11,7 +11,7 @@
   var presented = 0;
   var report = {
     platform: 'webOS TV 26 Simulator',
-    appVersion: '0.2.103',
+    appVersion: window.HongguoWebOS && window.HongguoWebOS.appVersion || 'unknown',
     seriesID: seriesID,
     title: '神豪外挂第一季',
     player: 'HTML5 video through webOS JS Service',
@@ -41,6 +41,8 @@
 
   function sample(stage) {
     var quality = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : {};
+    var style = window.getComputedStyle(video);
+    var hero = document.getElementById('hero');
     var source = video.currentSrc || video.src || '';
     if (source && source !== lastSource) lastSource = source;
     return {
@@ -56,6 +58,10 @@
       videoHeight: video.videoHeight || 0,
       readyState: video.readyState,
       paused: !!video.paused,
+      muted: !!video.muted,
+      visible: style.visibility === 'visible' && Number(style.opacity) > 0,
+      loading: !!(hero && hero.classList.contains('is-preparing-video')),
+      audioDecodedBytes: video.webkitAudioDecodedByteCount || 0,
       seeking: !!video.seeking,
       ended: !!video.ended,
       mediaError: video.error ? video.error.code : 0,

@@ -73,8 +73,8 @@ def main():
     services_manifest = json.loads(services_raw)
     if service_package.get("name") != expected_service_id:
         fail("service package id mismatch")
-    if service_package.get("main") != "service.js":
-        fail("service package main must be service.js")
+    if service_package.get("main") != "service-entry.js":
+        fail("service package main must be the bootstrap entry service-entry.js")
     if service_package.get("version") != appinfo.get("version"):
         fail("service package version must match app version")
     service_definitions = services_manifest.get("services", [])
@@ -85,7 +85,8 @@ def main():
     for command in ("ping", "getDiagnostics", "shutdown"):
         if command not in commands or commands[command].get("public") is not True:
             fail("services.json command must be declared public: " + command)
-    service_path = service_package_path.rsplit("/", 1)[0] + "/service.js"
+    service_root = service_package_path.rsplit("/", 1)[0]
+    service_path = service_root + "/service-entry.js"
     app_root = appinfo_path.rsplit("/", 1)[0]
     names = set()
     with tarfile.open(fileobj=BytesIO(members["data.tar.gz"]), mode="r:gz") as package:
@@ -95,6 +96,11 @@ def main():
             fail("app main file is missing from package")
         if service_path not in names:
             fail("service main file is missing from package")
+        if service_root + "/service.js" not in names:
+            fail("service factory is missing from package")
+        entry_stream = package.extractfile(service_path)
+        if not entry_stream or not re.search(r"require\(\s*['\"]\./service['\"]\s*\)\s*\(\s*\)", entry_stream.read().decode("utf-8")):
+            fail("service bootstrap entry does not initialize the factory")
         index_stream = package.extractfile(app_index_path)
         if index_stream is None:
             fail("could not read packaged app main")

@@ -64,6 +64,20 @@ var document = {
 vm.runInNewContext(source, { window: window, document: document, Promise: Promise, Array: Array, Object: Object, String: String, JSON: JSON });
 
 async function run() {
+  var media = '/minireel-proxy/media/0123456789abcdef01234567.mp4';
+  var absoluteMedia = 'http://127.0.0.1:7655' + media;
+  assert(window.HongguoWebOS.sameMediaSource(absoluteMedia, media));
+  assert(window.HongguoWebOS.sameMediaSource(media, absoluteMedia));
+  assert(window.HongguoWebOS.sameMediaSource(absoluteMedia, absoluteMedia));
+  assert(!window.HongguoWebOS.sameMediaSource('http://example.com' + media, media));
+  assert(!window.HongguoWebOS.sameMediaSource(absoluteMedia + '?other=1', media));
+  assert(!window.HongguoWebOS.sameMediaSource(null, media));
+  assert(!window.HongguoWebOS.sameMediaSource('', ''));
+  var video = new window.HTMLMediaElement();
+  video.src = media;
+  assert.strictEqual(video.src, absoluteMedia, 'the DOM keeps the real rewritten address');
+  assert(window.HongguoWebOS.sameMediaSource(video.src, media));
+
   var xhr = new window.XMLHttpRequest();
   xhr.open('GET', '/api/v1/status', true);
   assert.strictEqual(xhr.url, 'http://127.0.0.1:7655/api/v1/status');

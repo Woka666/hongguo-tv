@@ -27,7 +27,7 @@ var commands = service.services[0].commands || [];
   if (!command || command.public !== true) fail('service command must be declared public: ' + name);
 });
 var servicePackage = json(path.join(root, 'webos', 'service', 'package.json'));
-if (servicePackage.name !== service.services[0].name || servicePackage.main !== 'service.js') fail('service package must declare its registered id and service.js entry point');
+if (servicePackage.name !== service.services[0].name || servicePackage.main !== 'service-entry.js') fail('service package must declare its registered id and bootstrap entry point');
 if (servicePackage.version !== app.version) fail('service package version must match app version');
 if (!fs.existsSync(path.join(root, 'webos', 'service', servicePackage.main))) fail('service entry point is missing');
 var index = read(path.join(root, 'core', 'cmd', 'hongguotv', 'ui', 'index.html'));
@@ -62,6 +62,7 @@ NODE
 "$node_bin" "$repo_dir/webos/service/provider.test.js"
 "$node_bin" "$repo_dir/webos/service/range-media.test.js"
 "$node_bin" "$repo_dir/webos/service/account.test.js"
+"$node_bin" "$repo_dir/webos/service/service-entry.test.js"
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/hongguo-webos-verify.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT INT TERM

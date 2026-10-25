@@ -383,6 +383,28 @@ async function prepared(options){
   return f;
 }
 async function present(f){f.paint();f.paint();await tick();f.paint();await tick();}
+test('webOS rewritten media identity releases the loading cover and held audio',async()=>{
+  const f=await prepared();
+  const base='http://127.0.0.1:7655',path='/minireel-proxy/media/0123456789abcdef01234567.mp4';
+  f.c.window={HongguoWebOS:{sameMediaSource:(actual,expected)=>actual===base+expected}};
+  f.c.activePlayback.presentation.source=path;
+  f.video.src=base+path;
+  f.handlers.playing();await present(f);
+  assert.equal(f.hero.classList.contains('is-preparing-video'),false);
+  assert.equal(f.video.muted,false);
+  assert.equal(f.c.activePlayback.started,true);
+});
+test('webOS source comparison still rejects a stale episode or a foreign host',async()=>{
+  for(const actual of ['http://127.0.0.1:7655/minireel-proxy/media/other.mp4','http://example.com/minireel-proxy/media/current.mp4']){
+    const f=await prepared();
+    f.c.window={HongguoWebOS:{sameMediaSource:(actual,expected)=>actual==='http://127.0.0.1:7655'+expected}};
+    f.c.activePlayback.presentation.source='/minireel-proxy/media/current.mp4';
+    f.video.src=actual;
+    f.handlers.playing();await present(f);
+    assert.equal(f.hero.classList.contains('is-preparing-video'),true);
+    assert.equal(f.video.muted,true);
+  }
+});
 test('history seeking between playing and cover paint retries without another playing event',async()=>{
   const f=await prepared();f.handlers.playing();f.paint();
   f.video.seeking=true;f.handlers.seeking();f.paint();await tick();

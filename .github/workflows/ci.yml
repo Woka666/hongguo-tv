@@ -61,6 +61,8 @@ jobs:
           node --check core/cmd/hongguotv/ui/search-history.js
           python3 -m unittest discover -s tests -p "test_*.py"
           node --test tests/*.test.cjs
+      - name: Verify webOS service bootstrap, media routing and staged app
+        run: bash scripts/verify_webos.sh
       - name: Build Android native binaries
         run: bash scripts/build_android_binaries.sh
         env:
