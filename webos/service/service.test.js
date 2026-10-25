@@ -11,6 +11,7 @@ var handlers = {};
 var activityCalls = [];
 var libraryChanges = [];
 var prepareRequests = [];
+var cacheSessionRequests = [];
 var luna = {
   activityManager: {
     create: function (name, callback) { activityCalls.push('create:' + name); callback({ id: 'activity-1' }); },
@@ -36,6 +37,7 @@ var provider = {
   discussion: function () { return Promise.resolve({ items: [], has_more: false, total: 0 }); },
   replies: function () { return Promise.resolve({ items: [], has_more: false, total: 0 }); },
   mediaDiagnostics: function () { return { media_prepared: false, media_state: 'none' }; },
+  cacheSession: function (body) { cacheSessionRequests.push(body); return { session: 'cache-session', accepted: true }; },
   videoModelDiagnostics: function () { return { stage: 'idle', code: 'NOT_RUN' }; },
   library: function () { return { version: 1, entries: [], owner_id: '' }; },
   changeLibrary: function (change) { libraryChanges.push(change); return { version: 1, entries: [], owner_id: '' }; },
@@ -104,6 +106,9 @@ async function run() {
   assert.strictEqual(ping.ok, true);
   assert.strictEqual(ping.ready, true);
   assert.deepStrictEqual(activityCalls, ['create:hongguo-webos-http']);
+  provider.startCache = function () { var error = new Error('storage unavailable'); error.code = 'EACCES'; throw error; };
+  assert.strictEqual((await invoke('ping')).ready, true, 'storage failure does not disable unrelated APIs');
+  delete provider.startCache;
 
   var status = await request('GET', '/api/v1/status', { Origin: 'null' });
   assert.strictEqual(status.status, 200);
@@ -126,6 +131,12 @@ async function run() {
   assert.strictEqual(blockedOrigin.headers['access-control-allow-origin'], undefined, 'remote origins cannot read the local service');
 
   var rangePrepare = await request('GET', '/api/v1/play/info?series_id=1&vid=2&mode=range');
+  var cacheOpen = await request('POST', '/api/v1/player/cache-session', { Origin: 'null' }, JSON.stringify({ action: 'open' }));
+  assert.strictEqual(cacheOpen.status, 200);
+  assert.strictEqual(JSON.parse(cacheOpen.body).data.session, 'cache-session');
+  assert.strictEqual(cacheSessionRequests[0].action, 'open');
+  assert.strictEqual((await request('GET', '/api/v1/player/cache-session')).status, 405);
+  assert.strictEqual((await request('POST', '/api/v1/player/cache-session', {}, '{broken')).status, 400);
   assert.strictEqual(JSON.parse(rangePrepare.body).data.mode, 'range');
   assert.deepStrictEqual(prepareRequests[0], { mode: 'range', prefetch: false }, 'playback mode is forwarded to the provider');
   await request('GET', '/api/v1/play/info?series_id=1&vid=3&mode=range&prefetch=1');

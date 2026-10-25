@@ -60,6 +60,7 @@ NODE
 
 "$node_bin" "$repo_dir/webos/service/passport-sign.test.js"
 "$node_bin" "$repo_dir/webos/service/provider.test.js"
+"$node_bin" "$repo_dir/webos/service/media-cache.test.js"
 "$node_bin" "$repo_dir/webos/service/range-media.test.js"
 "$node_bin" "$repo_dir/webos/service/account.test.js"
 "$node_bin" "$repo_dir/webos/service/service-entry.test.js"

@@ -13,6 +13,7 @@
   var querystring = require('querystring');
   var passportSign = require('./passport-sign');
   var rangeMedia = require('./range-media');
+  var createMediaCache = require('./media-cache');
 
   var API_BASE = 'https://api5-normal-sinfonlineb.fqnovel.com';
   var WEB_BASE = 'https://hongguoduanju.com';
@@ -25,6 +26,7 @@
   var rangeSources = Object.create(null);
   var mediaStatus = Object.create(null);
   var cacheRoot = '';
+  var mediaCache = null;
   var lastVideoModelDiagnostic = null;
 
   function fail(message, status, code, stage) { var error = new Error(message); error.code = code || 'PROVIDER_ERROR'; if (status) error.status = status; if (stage) error.stage = stage; return error; }
@@ -380,14 +382,22 @@
     candidates.push('/var/palm/data/com.aston314.hongguo.webos.service/media');
     candidates.push(path.join(process.cwd(), 'media-cache'));
     for (var i = 0; i < candidates.length; i++) {
-      try { mkdirp(candidates[i], 448); cacheRoot = candidates[i]; return cacheRoot; } catch (ignored) {}
+      try {
+        mkdirp(candidates[i], 448);
+        var stat = fs.lstatSync(candidates[i]);
+        if (!stat.isDirectory() || stat.isSymbolicLink()) continue;
+        cacheRoot = candidates[i];
+        mediaCache = createMediaCache(cacheRoot);
+        mediaCache.start();
+        return cacheRoot;
+      } catch (ignored) {}
     }
     throw fail('webOS 媒体缓存目录不可写');
   }
   function fileExists(file) { try { return fs.statSync(file).isFile(); } catch (ignored) { return false; } }
 
-  function downloadFile(target, destination) {
-    return rangeMedia.downloadFile(target, destination, { 'User-Agent': APP_UA }, MAX_MEDIA);
+  function downloadFile(target, destination, token) {
+    return rangeMedia.downloadFile(target, destination, { 'User-Agent': APP_UA }, MAX_MEDIA, function (size) { mediaCache.reserve(token, size); });
   }
 
   function readU32(buffer, offset) { return buffer.readUInt32BE(offset); }
@@ -482,12 +492,17 @@
     var token = wantsRange ? mediaToken(seriesID, vid, quality, fallback, 'range') : fullToken;
     var jobKey = token + (prefetch ? ':prefetch' : '');
     var root = ensureCacheRoot(); var dir = path.join(root, token); var file = path.join(dir, token + '.mp4');
+    mediaCache.prune(false);
     if (rangeSources[token] && wantsRange) {
       rangeSources[token].lastUsedAt = Date.now();
+      mediaCache.touch(token, true);
       return Promise.resolve({ path: '/minireel-proxy/media/' + token + '.mp4', quality: rangeSources[token].quality || quality || '', qualities: [], vid: vid, mode: 'range' });
     }
     if (jobs[jobKey]) return jobs[jobKey];
-    if (!wantsRange && fileExists(file)) return Promise.resolve({ path: '/minireel-proxy/media/' + token + '.mp4', quality: quality || '', qualities: [], vid: vid, mode: 'full' });
+    if (!wantsRange && fileExists(file)) {
+      mediaCache.touch(token, true);
+      return Promise.resolve({ path: '/minireel-proxy/media/' + token + '.mp4', quality: quality || '', qualities: [], vid: vid, mode: 'full' });
+    }
     var job = videoOptions(vid).then(function (options) {
       var selected = choose(options, quality, fallback);
       var qualities = options.map(function (x) { return x.quality; }).filter(Boolean);
@@ -499,24 +514,35 @@
           if (rangeError) output.range_fallback = String(rangeError.message || '按需读取不可用，已使用整集播放模式');
           return output;
         }
-        if (fileExists(fullFile)) return Promise.resolve(withFallback({ path: '/minireel-proxy/media/' + fullToken + '.mp4', quality: selected.quality, qualities: qualities, vid: vid, mode: 'full' }));
+        if (fileExists(fullFile)) {
+          mediaCache.touch(fullToken, true);
+          return Promise.resolve(withFallback({ path: '/minireel-proxy/media/' + fullToken + '.mp4', quality: selected.quality, qualities: qualities, vid: vid, mode: 'full' }));
+        }
         if (fullDownloads[fullToken]) return fullDownloads[fullToken].then(withFallback);
-        mkdirp(fullDir, 448);
+        var releaseDownload = mediaCache.protect(fullToken);
         var temp = fullFile + '.part';
-        var download = downloadFile(selected.url, temp).then(function () {
+        var download = Promise.resolve().then(function () {
+          mediaCache.reserve(fullToken, 1);
+          mkdirp(fullDir, 448);
+          return downloadFile(selected.url, temp, fullToken);
+        }).then(function () {
           if (selected.key) decryptMP4(temp, selected.key);
           fs.renameSync(temp, fullFile);
+          mediaCache.touch(fullToken, true);
           return { path: '/minireel-proxy/media/' + fullToken + '.mp4', quality: selected.quality, qualities: qualities, vid: vid, mode: 'full' };
         }).catch(function (error) {
           try { fs.unlinkSync(temp); } catch (ignored) {}
           try { fs.rmdirSync(fullDir); } catch (ignoredDir) {}
+          if (error && (error.code === 'ENOSPC' || error.code === 'EDQUOT')) throw mediaCache.fullError();
           throw error;
         });
         var sharedDownload = download.then(function (result) {
           if (fullDownloads[fullToken] === sharedDownload) delete fullDownloads[fullToken];
+          mediaCache.finishDownload(fullToken); releaseDownload(); mediaCache.prune(true);
           return result;
         }, function (error) {
           if (fullDownloads[fullToken] === sharedDownload) delete fullDownloads[fullToken];
+          mediaCache.finishDownload(fullToken); releaseDownload(); mediaCache.prune(true);
           throw error;
         });
         fullDownloads[fullToken] = sharedDownload;
@@ -539,6 +565,7 @@
         source.lastUsedAt = Date.now();
         trimRangeSources(token, source);
         rangeSources[token] = source;
+        mediaCache.touch(token, true);
         return { path: '/minireel-proxy/media/' + token + '.mp4', quality: selected.quality, qualities: qualities, vid: vid, mode: 'range' };
       }).catch(function (rangeError) {
         if (prefetch) throw rangeError;
@@ -591,6 +618,11 @@
       return jsonResponse(res, 405, { ok: false, error: 'METHOD_NOT_ALLOWED' });
     }
     if (!/^[a-f0-9]{24}$/.test(token)) return jsonResponse(res, 400, { ok: false, error: '媒体标识无效' });
+    ensureCacheRoot();
+    mediaCache.touch(token);
+    var releaseRead = mediaCache.protect(token);
+    res.once('close', releaseRead);
+    res.once('finish', releaseRead);
     if (rangeSources[token]) {
       rangeSources[token].lastUsedAt = Date.now();
       return rangeMedia.serve(req, res, rangeSources[token], function (status) {
@@ -629,6 +661,7 @@
     if (range.partial) res.setHeader('Content-Range', 'bytes ' + start + '-' + end + '/' + stat.size);
     if (req.method === 'HEAD') return res.end();
     var stream = fs.createReadStream(file, { start: start, end: end });
+    res.once('close', function () { stream.destroy(); });
     stream.on('error', function (error) {
       mediaStatus[token] = { status: 500, at: Date.now() };
       if (res.headersSent) { if (typeof res.destroy === 'function') res.destroy(error); return; }
@@ -1032,6 +1065,8 @@
   function mediaDiagnostics(mediaPath) {
     var result = { version: 'webos-service', os: 'webos', arch: 'unknown', media_prepared: false, media_bytes: 0, media_http_status: 0, media_age_seconds: 0, media_state: 'none' };
     var match = /^\/minireel-proxy\/media\/([a-f0-9]{24})\.mp4$/.exec(String(mediaPath || ''));
+    ensureCacheRoot();
+    result.media_cache = mediaCache.diagnostics();
     if (!match) return result;
     var token = match[1], file = path.join(ensureCacheRoot(), token, token + '.mp4'), stat;
     try { stat = fs.statSync(file); result.media_prepared = stat.isFile(); result.media_bytes = stat.size; result.media_state = result.media_prepared ? 'ready' : 'missing'; } catch (ignored) { result.media_state = jobs[token] ? 'preparing' : 'missing'; }
@@ -1056,9 +1091,9 @@
     var metadataBytes = keepSource ? keepSource.prefix.length + keepSource.samples.length * 128 + (keepSource.key ? keepSource.key.length : 0) : 0;
     if (metadataBytes > 24 * 1024 * 1024) throw fail('MP4 Range 索引超过内存限制');
     Object.keys(rangeSources).forEach(function (key) {
-      if (key !== keepToken && now - Number(rangeSources[key].lastUsedAt || 0) > 15 * 60 * 1000) delete rangeSources[key];
+      if (key !== keepToken && !mediaCache.isActive(key) && now - Number(rangeSources[key].lastUsedAt || 0) > 15 * 60 * 1000) delete rangeSources[key];
     });
-    var keys = Object.keys(rangeSources).filter(function (key) { return key !== keepToken; });
+    var keys = Object.keys(rangeSources).filter(function (key) { return key !== keepToken && !mediaCache.isActive(key); });
     keys.sort(function (a, b) { return Number(rangeSources[a].lastUsedAt || 0) - Number(rangeSources[b].lastUsedAt || 0); });
     function totalBytes() {
       return Object.keys(rangeSources).reduce(function (total, key) {
@@ -1067,6 +1102,7 @@
       }, metadataBytes);
     }
     while ((Object.keys(rangeSources).length >= 2 || totalBytes() > 24 * 1024 * 1024) && keys.length) delete rangeSources[keys.shift()];
+    if (Object.keys(rangeSources).length >= 2) throw fail('正在使用的 Range 索引已占满缓存，请稍后重试');
     if (totalBytes() > 24 * 1024 * 1024) throw fail('Range 索引缓存超过内存限制');
   }
 
@@ -1176,6 +1212,9 @@
     suggestions: suggestions, actorWorks: actorWorks, engagement: engagement, discussion: discussion, replies: replies,
     radar: radar, library: library, changeLibrary: changeLibrary,
     dataDirectory: dataDirectory,
+    startCache: function () { ensureCacheRoot(); mediaCache.start(); },
+    closeCache: function () { if (mediaCache) mediaCache.close(); },
+    cacheSession: function (body) { ensureCacheRoot(); return mediaCache.updateSession(body); },
     searchHistory: searchHistory, mediaDiagnostics: mediaDiagnostics, parseMediaByteRange: parseMediaByteRange,
     videoModelDiagnostics: videoModelDiagnostics, inspectVideoModel: inspectVideoModel,
     status: function () { return { playback_verified: false, provider: 'first-party-js-port', media: 'cenc-aes-ctr-range-with-full-download-fallback', data: 'real-public-metadata-plus-local-library' }; }

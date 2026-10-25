@@ -98,6 +98,10 @@ def main():
             fail("service main file is missing from package")
         if service_root + "/service.js" not in names:
             fail("service factory is missing from package")
+        if service_root + "/media-cache.js" not in names:
+            fail("media cache policy is missing from package")
+        if any(name.endswith(".test.js") for name in names):
+            fail("test harness files must not be packaged")
         entry_stream = package.extractfile(service_path)
         if not entry_stream or not re.search(r"require\(\s*['\"]\./service['\"]\s*\)\s*\(\s*\)", entry_stream.read().decode("utf-8")):
             fail("service bootstrap entry does not initialize the factory")
@@ -157,8 +161,6 @@ def main():
                 fail("HTTP staging mode must identify itself and state that Luna is unverified")
             if mode == "luna" and "Luna ping 与本机 HTTP 健康检查均成功" not in adapter:
                 fail("Luna staging adapter is missing its Luna readiness diagnostic")
-            if any(name.endswith(".test.js") for name in names):
-                fail("test harness files must not be packaged")
         elif app_root + "/webos-stage-manifest.json" in names or "192.168.2.124" in adapter:
             fail("staging configuration leaked into the production package")
     services = packageinfo.get("services", [])

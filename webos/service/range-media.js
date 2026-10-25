@@ -565,7 +565,7 @@ function serve(req, res, source, onStatus) {
   writeChunk(start);
 }
 
-function downloadFile(target, destination, headers, maxBytes) {
+function downloadFile(target, destination, headers, maxBytes, beforeWrite) {
   headers = headers || {};
   maxBytes = maxBytes || MAX_MEDIA_BYTES;
   function attempt(current, redirects) {
@@ -600,9 +600,14 @@ function downloadFile(target, destination, headers, maxBytes) {
           var total = 0;
           response.on('data', function (chunk) {
             total += chunk.length;
-            if (total > maxBytes) {
-              request.destroy(fail('媒体超过大小限制'));
-              output.destroy(fail('媒体超过大小限制'));
+            try {
+              if (total > maxBytes) throw fail('媒体超过大小限制');
+              if (beforeWrite) beforeWrite(total);
+            } catch (error) {
+              response.unpipe(output);
+              response.destroy();
+              request.destroy(error);
+              output.destroy(error);
             }
           });
           response.on('error', finish);

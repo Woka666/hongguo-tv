@@ -14,6 +14,8 @@ var lunaOptions = [];
 var failNextPingWithTimeout = false;
 var healthPayload = { ok: true, ready: true, port: 7655 };
 var healthFails = false;
+var cacheCalls = [];
+var rejectNextCacheUpdate = false;
 var window = {
   Promise: Promise,
   setTimeout: setTimeout,
@@ -24,9 +26,17 @@ var window = {
     if (String(input).indexOf('/api/v1/health') >= 0) {
       return healthFails ? Promise.resolve({ ok: false, status: 503 }) : Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve(healthPayload); } });
     }
+    if (String(input).indexOf('/api/v1/player/cache-session') >= 0) {
+      var body = JSON.parse(options.body); cacheCalls.push(body);
+      if (body.action === 'update' && rejectNextCacheUpdate) {
+        rejectNextCacheUpdate = false;
+        return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ ok: true, data: { accepted: false } }); } });
+      }
+      return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ ok: true, data: body.action === 'open' ? { session: 'test-session', accepted: true } : { accepted: true } }); } });
+    }
     return Promise.resolve({ ok: true });
   },
-  Element: { prototype: { setAttribute: function (name, value) { this[name] = value; } } },
+  Element: { prototype: { setAttribute: function (name, value) { this[name] = value; }, removeAttribute: function (name) { delete this[name]; if (name === 'src') this._src = ''; } } },
   HTMLMediaElement: function () {},
   XMLHttpRequest: function () {},
   addEventListener: function (name, callback) { listeners[name] = callback; },
@@ -89,7 +99,23 @@ async function run() {
 
   await window.fetch('/api/v1/lists/recommend');
   assert.strictEqual(fetchCalls[0].input, 'http://127.0.0.1:7655/api/v1/health', 'health is checked after Luna ping');
-  assert.strictEqual(fetchCalls[1].input, 'http://127.0.0.1:7655/api/v1/lists/recommend');
+  assert(fetchCalls.some(function (call) { return call.input === 'http://127.0.0.1:7655/api/v1/lists/recommend'; }));
+  await new Promise(function (resolve) { setTimeout(resolve, 10); });
+  assert.strictEqual(cacheCalls.filter(function (call) { return call.action === 'open'; }).length, 1);
+  assert.strictEqual(cacheCalls[cacheCalls.length - 1].token, '0123456789abcdef01234567', 'playing source has a lease independent of active HTTP requests');
+  var second = '/minireel-proxy/media/aaaaaaaaaaaaaaaaaaaaaaaa.mp4';
+  video.removeAttribute('src'); video.setAttribute('src', second); video.src = media;
+  await new Promise(function (resolve) { setTimeout(resolve, 10); });
+  assert.strictEqual(cacheCalls[cacheCalls.length - 1].token, '0123456789abcdef01234567', 'rapid switches keep the newest source');
+  video.removeAttribute('src');
+  await new Promise(function (resolve) { setTimeout(resolve, 10); });
+  assert.strictEqual(cacheCalls[cacheCalls.length - 1].token, '', 'removing the source releases playback even with no media requests');
+  video.src = media;
+  rejectNextCacheUpdate = true;
+  video.src = second;
+  await new Promise(function (resolve) { setTimeout(resolve, 10); });
+  assert.strictEqual(cacheCalls.filter(function (call) { return call.action === 'open'; }).length, 2, 'service restart renews the active session without waiting for another source change');
+  assert.strictEqual(cacheCalls[cacheCalls.length - 1].token, 'aaaaaaaaaaaaaaaaaaaaaaaa');
   assert.strictEqual(window.HongguoWebOS.getDiagnostic().code, 'READY');
 
   failNextPingWithTimeout = true;
@@ -130,6 +156,10 @@ async function run() {
   listeners.pagehide();
   await new Promise(function (resolve) { setTimeout(resolve, 5); });
   assert(lunaOptions.some(function (options) { return options.method === 'shutdown'; }));
+  assert(cacheCalls.some(function (call) { return call.action === 'close'; }), 'page exit releases its session');
+  listeners.pageshow();
+  await new Promise(function (resolve) { setTimeout(resolve, 10); });
+  assert.strictEqual(cacheCalls.filter(function (call) { return call.action === 'open'; }).length, 3, 'restoring a frozen page creates a fresh session');
   console.log('webOS adapter routing, health checks, and error diagnostics: PASS');
 }
 

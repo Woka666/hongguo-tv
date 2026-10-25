@@ -144,6 +144,22 @@ async function testMediaRangeProxy() {
     var invalid = await requestMedia(server, 'GET', 'bytes=0-1,4-5');
     assert.strictEqual(invalid.status, 416);
     assert.strictEqual(invalid.headers['content-range'], 'bytes */10');
+
+    // No HTTP stream remains open while paused. Explicit playback still pins
+    // this file when a later cleanup evicts other legacy media by size.
+    var session = provider.cacheSession({ action: 'open' }).session;
+    provider.cacheSession({ action: 'update', session: session, revision: 1, token: token });
+    var old = 'bbbbbbbbbbbbbbbbbbbbbbbb';
+    fs.mkdirSync(path.join(dataRoot, old));
+    fs.writeFileSync(path.join(dataRoot, old, old + '.mp4'), '');
+    fs.truncateSync(path.join(dataRoot, old, old + '.mp4'), 512 * 1024 * 1024);
+    provider.cacheSession({ action: 'update', session: session, revision: 2, token: token });
+    assert(!fs.existsSync(path.join(dataRoot, old, old + '.mp4')), 'capacity cleanup removes the unoccupied legacy file');
+    var resumed = await requestMedia(server, 'GET', 'bytes=4-7', bounded.headers.etag);
+    assert.strictEqual(resumed.status, 206);
+    assert.strictEqual(resumed.body.toString(), 'efgh', 'pause and seek retain the original cached bytes');
+    assert.strictEqual(resumed.headers.etag, bounded.headers.etag, 'last-use updates never invalidate If-Range');
+    provider.cacheSession({ action: 'close', session: session });
   } finally {
     await new Promise(function (resolve) { server.close(resolve); });
   }
@@ -212,6 +228,17 @@ async function run() {
     var fallbackToken = crypto.createHash('sha256').update(seriesID + ':5234567890123456789').digest('hex').slice(0, 24);
     assert.strictEqual(rangeFallback.path, '/minireel-proxy/media/' + fallbackToken + '.mp4', 'foreground fallback uses the standard full-file URL');
     assert.strictEqual(videoModelRequests, 2, 'foreground preparation performs a fresh source resolution');
+    var diskDownload = rangeMedia.downloadFile;
+    rangeMedia.downloadFile = function (_, destination) {
+      fs.writeFileSync(destination, 'partial');
+      var error = new Error('disk full'); error.code = 'ENOSPC'; return Promise.reject(error);
+    };
+    try {
+      await assert.rejects(provider.prepare(seriesID, '6234567890123456789', '', true, 'full', false), function (error) { return error.status === 507 && error.code === 'MEDIA_CACHE_FULL'; });
+      var failedToken = crypto.createHash('sha256').update(seriesID + ':6234567890123456789').digest('hex').slice(0, 24);
+      assert(!fs.existsSync(path.join(dataRoot, failedToken)), 'disk-full cleanup removes only the failed download');
+      assert(fs.existsSync(path.join(dataRoot, fallbackToken, fallbackToken + '.mp4')), 'disk-full failure preserves ready media');
+    } finally { rangeMedia.downloadFile = diskDownload; }
 
     var seasons = await provider.seasons(seriesID);
     assert.strictEqual(seasons.source, 'webos-detail-fallback');
@@ -229,6 +256,7 @@ async function run() {
     assert(dramaLike.entries[0].liked_at > 0, 'guest series-like behavior is retained');
     console.log('webOS provider signed category/calendar, detail actors/social and empty-season fallback: PASS');
   } finally {
+    provider.closeCache();
     https.request = originalRequest;
     rangeMedia.downloadFile = originalDownloadFile;
     fs.rmSync(dataRoot, { recursive: true, force: true });

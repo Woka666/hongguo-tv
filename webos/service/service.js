@@ -131,6 +131,10 @@
     function handleProvider(req, res, pathName) {
       var q = query(req);
       if (!supportedMethod(req)) return json(res, 405, { ok: false, error: 'METHOD_NOT_ALLOWED' }, req);
+      if (pathName === '/api/v1/player/cache-session') {
+        if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'METHOD_NOT_ALLOWED' }, req);
+        return bodyJSON(req, 1024).then(function (body) { return provider.cacheSession(body); }).then(function (result) { data(req, res, result); }, function (error) { failure(req, res, error); });
+      }
       if (pathName.indexOf('/minireel-proxy/media/') === 0) {
         return provider.serveMedia(req, res, pathName.slice('/minireel-proxy/media/'.length).replace(/\.mp4$/, ''));
       }
@@ -350,6 +354,10 @@
     }
 
     function ensureReady() {
+      // Storage failure should be reported by playback, without taking down
+      // search, account, and other non-media APIs.
+      try { if (provider.startCache) provider.startCache(); }
+      catch (error) { console.warn('[hongguo-webos] media cache unavailable:', error && error.code || 'CACHE_INIT'); }
       return Promise.all([ensureActivity(), ensureServer()]);
     }
 
@@ -378,6 +386,7 @@
     }
 
     function stopServer() {
+      if (provider.closeCache) provider.closeCache();
       if (!server || !server.listening) { server = null; return Promise.resolve(); }
       var previous = server;
       server = null;

@@ -159,6 +159,17 @@ async function testFullDownloadRedirectFallbackHelper() {
   try {
     await rangeMedia.downloadFile('http://127.0.0.1:' + redirectPort + '/signed', destination, { 'User-Agent': 'fixture-agent' }, 1024 * 1024);
     assert.deepStrictEqual(fs.readFileSync(destination), fixture.bytes);
+    fs.unlinkSync(destination);
+    var checked = 0;
+    await assert.rejects(rangeMedia.downloadFile('http://127.0.0.1:' + redirectPort + '/signed', destination, {}, 1024 * 1024, function (size) {
+      checked = size;
+      var full = new Error('cache full'); full.code = 'MEDIA_CACHE_FULL'; throw full;
+    }), function (error) { return error.code === 'MEDIA_CACHE_FULL'; });
+    // The capacity guard also survives redirects and prevents the first chunk
+    // from being written, rather than discovering the overflow after download.
+    await new Promise(function (resolve) { setTimeout(resolve, 10); });
+    assert.strictEqual(checked, fixture.bytes.length);
+    assert(!fs.existsSync(destination) || fs.statSync(destination).size === 0);
   } finally {
     try { fs.unlinkSync(destination); } catch (ignored) {}
     fs.rmdirSync(root);

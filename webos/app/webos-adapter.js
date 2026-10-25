@@ -14,6 +14,7 @@
   var rawXHROpen = xhrPrototype && xhrPrototype.open;
   var rawXHRSend = xhrPrototype && xhrPrototype.send;
   var rawSetAttribute = window.Element && window.Element.prototype.setAttribute;
+  var rawRemoveAttribute = window.Element && window.Element.prototype.removeAttribute;
   var rawMediaSrc = window.HTMLMediaElement && Object.getOwnPropertyDescriptor(window.HTMLMediaElement.prototype, 'src');
 
   function serviceURL(value) {
@@ -70,6 +71,58 @@
   };
 
   var serviceWake = null;
+  var cacheSession = '', cacheOpen = null, cacheQueue = Promise.resolve();
+  var cacheRevision = 0, cacheToken = '', cacheElement = null, pageClosed = false;
+  function cacheRequest(body) {
+    return rawFetch.call(window, SERVICE_BASE + '/api/v1/player/cache-session', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), keepalive: true
+    }).then(function (response) {
+      if (!response || !response.ok) throw new Error('媒体缓存会话连接失败');
+      return response.json();
+    }).then(function (payload) {
+      if (!payload || !payload.ok || !payload.data) throw new Error('媒体缓存会话响应无效');
+      return payload.data;
+    });
+  }
+  function openCacheSession() {
+    if (cacheSession) return Promise.resolve(cacheSession);
+    if (cacheOpen) return cacheOpen;
+    cacheOpen = wakeService().then(function () {
+      if (pageClosed) return '';
+      return cacheRequest({ action: 'open' }).then(function (result) {
+        cacheSession = result.session;
+        return cacheSession;
+      });
+    });
+    cacheOpen.then(function () { cacheOpen = null; }, function () { cacheOpen = null; });
+    return cacheOpen;
+  }
+  function syncCacheSession() {
+    if (typeof rawFetch !== 'function' || pageClosed) return;
+    // Serialize mutations and read the newest desired source after opening;
+    // a delayed response from a previous episode cannot re-pin that episode.
+    cacheQueue = cacheQueue.then(function () {
+      function publish(retried) {
+        return openCacheSession().then(function (session) {
+          if (!session || pageClosed) return;
+          return cacheRequest({ action: 'update', session: session, revision: ++cacheRevision, token: cacheToken }).then(function (result) {
+            if (!result.accepted) {
+              cacheSession = ''; // service restarted; restore the current lease immediately
+              if (!retried) return publish(true);
+            }
+          });
+        });
+      }
+      return publish(false);
+    }).catch(function () { cacheSession = ''; });
+  }
+  function trackMedia(element, value) {
+    var match = /^\/minireel-proxy\/media\/([a-f0-9]{24})\.mp4$/.exec(String(value || '').replace(SERVICE_BASE, ''));
+    if (!match && cacheElement !== element) return;
+    cacheElement = match ? element : null;
+    cacheToken = match ? match[1] : '';
+    syncCacheSession();
+  }
   var serviceRequests = [];
   function retainServiceRequest(request) {
     if (request && serviceRequests.indexOf(request) < 0) serviceRequests.push(request);
@@ -175,6 +228,9 @@
   }
 
   function releaseService() {
+    pageClosed = true;
+    if (cacheSession && typeof rawFetch === 'function') cacheRequest({ action: 'close', session: cacheSession }).catch(function () {});
+    cacheSession = '';
     serviceWake = null;
     requestService('shutdown', function () {});
   }
@@ -183,16 +239,23 @@
   window.HongguoWebOS.getDiagnostics = function () { return JSON.stringify(serviceDiagnostic); };
   window.HongguoWebOS.getDiagnostic = function () { return Object.assign({}, serviceDiagnostic); };
   wakeService().catch(function () {});
+  syncCacheSession();
 
   if (document.addEventListener) {
     document.addEventListener('visibilitychange', function () {
       if (!document.hidden) {
         serviceWake = null;
         wakeService().catch(function () {});
+        syncCacheSession();
       }
     });
   }
   window.addEventListener('pagehide', releaseService);
+  window.addEventListener('pageshow', function () {
+    if (!pageClosed) return;
+    pageClosed = false;
+    syncCacheSession();
+  });
 
   if (rawXHROpen && rawXHRSend) {
     xhrPrototype.open = function (method, target) {
@@ -235,7 +298,7 @@
         configurable: true,
         enumerable: rawMediaSrc.enumerable,
         get: rawMediaSrc.get,
-        set: function (value) { rawMediaSrc.set.call(this, serviceURL(value)); }
+        set: function (value) { rawMediaSrc.set.call(this, serviceURL(value)); trackMedia(this, value); }
       });
     } catch (ignoredMediaSrc) {}
   }
@@ -243,8 +306,15 @@
     try {
       window.HTMLMediaElement.prototype.setAttribute = function (name, value) {
         rawSetAttribute.call(this, name, name.toLowerCase() === 'src' ? serviceURL(String(value)) : value);
+        if (name.toLowerCase() === 'src') trackMedia(this, value);
       };
     } catch (ignoredAttribute) {}
+  }
+  if (rawRemoveAttribute && window.HTMLMediaElement) {
+    window.HTMLMediaElement.prototype.removeAttribute = function (name) {
+      rawRemoveAttribute.call(this, name);
+      if (name.toLowerCase() === 'src') trackMedia(this, '');
+    };
   }
 
   window.addEventListener('error', function (event) {
