@@ -16,7 +16,9 @@
 - 随包提供 LG 官方 `webOSTV.js`，并使用兼容 webOS 5.x 的 Luna 调用格式。
 - 与 Android TV / 桌面版同步的榜单雷达页面（官方榜分类与飙升榜数据）。
 
-协议、解密和媒体文件已在 macOS 网络环境中用真实上游数据验证，能够得到可被 `ffprobe` 识别的 HEVC/AAC MP4。LG webOS 真机尚未验证，因此不能把 `playback_verified` 视为通过；具体电视的 HEVC、AAC、Range 行为仍需真机确认。当前实现是完整下载后再解密，启动和磁盘占用会高于 Android Go 的分段方案。
+协议、解密和媒体文件已在 macOS 网络环境中用真实上游数据验证。优先使用 Range/CENC 按需读取；缺少强 ETag 等条件时仍安全回退到完整下载后解密，不会将失败的预取变为整集后台下载。磁盘缓存具有 512 MiB 总预算、2 小时闲置清理和播放占用保护，详见 [缓存策略](../docs/webos-media-cache.md)。
+
+2026-10-25 已在重新安装的 LG Simulator 中通过 HTTP 直连播放真实红果第 1、2 集、方向键切集及 seek，加载层退出、静音解除。缓存另有真实视频暂停期间容量清理和恢复播放验证。电视端 Luna IPC 与 LG 真机仍未验证，因此 `playback_verified` 不据此标为真机通过；记录见 [Issue #55 修复与验证](../docs/webos-issue55-playback.md)。
 
 webOS Service 已接入账号登录、国际手机号发码/MFA、预约、追更、通知、评论/弹幕/回复发布、点赞以及云端收藏/历史同步。账号态写入仍需要真实红果账号验收；未登录时会按接口契约返回 `ACCOUNT_REQUIRED`，不会伪造成功结果。当前版本仍是实验版，真实 LG 电视播放和账号写入结果不能仅凭 macOS 或 Simulator 推断。
 
