@@ -195,7 +195,7 @@ func TestSearchListUsesRegisteredAppContractAndServerCursor(t *testing.T) {
 	}
 }
 
-func TestSearchListFallsBackToDramaSuggestionsWhenAppSearchIsEmpty(t *testing.T) {
+func TestSearchListFallsBackToWebJSONWhenAppSearchIsEmpty(t *testing.T) {
 	var appSearchCalled bool
 	accounts := fixtureAccount(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -209,13 +209,13 @@ func TestSearchListFallsBackToDramaSuggestionsWhenAppSearchIsEmpty(t *testing.T)
 		}
 	})
 
-	var suggestionCalled bool
+	var webCalled bool
 	webServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/incent_resource/suggestion" || r.URL.Query().Get("query") != "极品四公子" {
-			t.Errorf("unexpected suggestion request: %s", r.URL.String())
+		if r.URL.Path != "/api/search/result" || r.URL.Query().Get("query") != "极品四公子" {
+			t.Errorf("unexpected Web search request: %s", r.URL.String())
 		}
-		suggestionCalled = true
-		ioJSON(w, `{"suggest_list":[{"word_type":"short_play_name","name":"极品四公子","keyword":"7687202316683840536","video_data":{"series_id":"7687202316683840536","series_title":"极品四公子","series_cover":"https://cover/one.jpg","episode_cnt":80}},{"word_type":"short_play_name","name":"极品四公子第二季","keyword":"7689464381515516990","video_data":{"series_id":"7689464381515516990","series_title":"极品四公子第二季","episode_cnt":72}},{"word_type":"common_query","name":"极品四公子宁宸","keyword":"1_abc","video_data":{"series_id":"9999999999999999999","series_title":"不要当作作品","episode_cnt":1}}]}`)
+		webCalled = true
+		ioJSON(w, `{"pageNum":1,"totalPages":2,"hasMore":true,"searchList":[{"video_data":{"series_id":"7687202316683840536","series_title":"极品四公子","episode_cnt":80}},{"video_data":{"series_id":"7689464381515516990","series_title":"极品四公子第二季","episode_cnt":72}},{"doc_type":"actor","user_info":{"user_id":"9999999999999999999"}}]}`)
 	}))
 	defer webServer.Close()
 	hongguo := newHongguoClient()
@@ -225,8 +225,8 @@ func TestSearchListFallsBackToDramaSuggestionsWhenAppSearchIsEmpty(t *testing.T)
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/lists/search?q=%E6%9E%81%E5%93%81%E5%9B%9B%E5%85%AC%E5%AD%90", nil)
 	w := httptest.NewRecorder()
 	s.lists(w, r)
-	if w.Code != http.StatusOK || !appSearchCalled || !suggestionCalled {
-		t.Fatalf("status=%d app=%v suggestion=%v body=%s", w.Code, appSearchCalled, suggestionCalled, w.Body.String())
+	if w.Code != http.StatusOK || !appSearchCalled || !webCalled {
+		t.Fatalf("status=%d app=%v web=%v body=%s", w.Code, appSearchCalled, webCalled, w.Body.String())
 	}
 	var payload struct {
 		OK   bool       `json:"ok"`
@@ -235,7 +235,7 @@ func TestSearchListFallsBackToDramaSuggestionsWhenAppSearchIsEmpty(t *testing.T)
 	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if !payload.OK || payload.Data.Source != "suggestions" || len(payload.Data.Items) != 2 || payload.Data.HasMore || payload.Data.Items[0].SeriesID != "7687202316683840536" || payload.Data.Items[1].Title != "极品四公子第二季" {
+	if !payload.OK || payload.Data.Source != "web" || len(payload.Data.Items) != 2 || !payload.Data.HasMore || payload.Data.NextOffset != 1 || payload.Data.Items[0].SeriesID != "7687202316683840536" || payload.Data.Items[1].Title != "极品四公子第二季" {
 		t.Fatalf("unexpected fallback search result: %+v", payload.Data)
 	}
 }

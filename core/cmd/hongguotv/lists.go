@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -153,23 +152,6 @@ func stopStalledPage(result *ListResult, offset int) {
 	if result.NextOffset <= offset {
 		result.HasMore = false
 	}
-}
-
-func searchSuggestionsAsList(result SearchSuggestionsResult) ListResult {
-	items := make([]Drama, 0, len(result.Items))
-	seen := make(map[string]bool, len(result.Items))
-	for _, suggestion := range result.Items {
-		if suggestion.Kind != "short_play_name" || suggestion.Drama == nil {
-			continue
-		}
-		drama := *suggestion.Drama
-		if !validID(drama.SeriesID) || drama.SeriesID == "0" || seen[drama.SeriesID] {
-			continue
-		}
-		seen[drama.SeriesID] = true
-		items = append(items, drama)
-	}
-	return ListResult{CategoryResult: CategoryResult{Items: items}, Source: "suggestions"}
 }
 
 func dataMap(p map[string]any) (map[string]any, error) {
@@ -657,13 +639,22 @@ func (s *server) lists(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "频道参数无效")
 		return
 	}
-	var client *passportClient
-	var g uint64
 	if kind == "search" {
-		client, g, e = s.accounts.searchClient(r.Context())
-	} else {
-		client, g, e = s.accounts.listClient(kind == "reservations" || kind == "recommend" && q.Get("channel") == "45")
+		out, generation, err := s.searchList(r.Context(), q)
+		if !s.accounts.sameGeneration(generation) {
+			writeError(w, 409, errAccountChanged.Error())
+		} else if err != nil {
+			status := http.StatusBadGateway
+			if errors.Is(err, errSearchParameters) {
+				status = http.StatusBadRequest
+			}
+			writeError(w, status, err.Error())
+		} else {
+			writeJSON(w, 200, map[string]any{"ok": true, "data": out})
+		}
+		return
 	}
+	client, g, e := s.accounts.listClient(kind == "reservations" || kind == "recommend" && q.Get("channel") == "45")
 	if e != nil {
 		writeError(w, 401, e.Error())
 		return
@@ -678,28 +669,6 @@ func (s *server) lists(w http.ResponseWriter, r *http.Request) {
 		out, e = client.RankList(r.Context(), q)
 	case "calendar", "reservations":
 		out, e = client.SubscriptionList(r.Context(), q, kind == "calendar")
-	case "search":
-		out, e = client.SearchList(r.Context(), q)
-		// Preserve website recovery when the app API returns an empty body on the
-		// first page, but do not replace the working app result path.
-		if e != nil && asInt(q.Get("offset")) == 0 && q.Get("source") != "app" {
-			suggestions, suggestionErr := s.hongguo.SearchSuggestions(r.Context(), q.Get("q"))
-			if suggestionErr == nil {
-				out = searchSuggestionsAsList(suggestions)
-				if len(out.Items) > 0 {
-					e = nil
-				}
-			}
-			if e != nil {
-				var web SearchResult
-				web, e = s.hongguo.Search(r.Context(), q.Get("q"))
-				if e == nil {
-					out = ListResult{CategoryResult: CategoryResult{Items: web.Items}, Source: "web"}
-				} else if suggestionErr != nil {
-					e = fmt.Errorf("搜索建议接口失败：%v；网页搜索失败：%w", suggestionErr, e)
-				}
-			}
-		}
 	default:
 		writeError(w, 404, "没有这个列表")
 		return

@@ -25,6 +25,31 @@ test('request failure retries the same cursor and does not discard existing card
   await p.reset();await p.load();assert.equal(p.error,'offline');const stable=p.items[0];await p.load();assert.equal(attempts,2);
   await p.load(true);assert.deepEqual(offsets,[0,10,10]);assert.equal(p.items[0],stable);assert.equal(p.error,'');
 });
+test('website search keeps its source and page cursor through a failed continuation and retry', async () => {
+  const calls = [];
+  let fail = true;
+  const p = create({
+    request: async q => {
+      calls.push(q);
+      if (q.source === 'web' && fail) { fail = false; throw Error('website offline'); }
+      return q.source === 'web'
+        ? { items: [row('second')], source: 'web', next_offset: 2, has_more: false }
+        : { items: [row('first')], source: 'web', next_offset: 1, has_more: true };
+    },
+    render: () => {}
+  });
+  await p.reset({ q: '万妖' });
+  await p.load();
+  assert.equal(p.items.length, 1);
+  assert.equal(p.error, 'website offline');
+  await p.load(true);
+  assert.deepEqual(calls.map(q => [q.source, q.offset]), [[undefined, undefined], ['web', 1], ['web', 1]]);
+  assert.deepEqual(p.items.map(x => x.series_id), ['first', 'second']);
+  assert.equal(p.hasMore(), false);
+  await p.reset({ q: '新关键词' });
+  assert.equal(calls[3].source, undefined);
+  assert.equal(calls[3].offset, undefined);
+});
 test('concurrent tail triggers issue one request; bounded empty pages stop loops', async () => {
   const reply=deferred();let calls=0;
   const p=create({request:()=>{calls++;return reply.promise;},render:()=>{}});
