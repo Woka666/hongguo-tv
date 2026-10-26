@@ -406,7 +406,13 @@
       });
     },
     prepare: function (target, signal) {
-      return fetchData('/api/v1/play/info?' + new URLSearchParams(Object.assign({}, target, { prefetch: '1' })), signal ? { signal: signal } : {});
+      return fetchData('/api/v1/play/info?' + new URLSearchParams(Object.assign({}, target, { prefetch: '1' })), signal ? { signal: signal } : {}).then(function (data) {
+        if (!webosShell || !data || !data.path || !window.HongguoWebOSMediaPrefetch) return data;
+        return window.HongguoWebOSMediaPrefetch.prepare(data.path, signal).then(function (entry) {
+          if (entry) data.webos_media_prefetch = true;
+          return data;
+        });
+      });
     }
   });
   var applicationInBackground = false;
@@ -4291,7 +4297,7 @@
     episodePrefetch.maybe({ item: playback.item, series_id: playback.item.series_id, vid: playback.vid,
       episode: playback.episode, quality: playbackPreferences.quality, generation: playback.generation, owner: accountEpoch,
       mode: (typeof rangePlaybackEnabled === 'function' && rangePlaybackEnabled()) ? 'range' : '',
-      prefetch_after_seconds: playbackEngineName() === 'mpv' ? 1 : 5,
+      prefetch_after_seconds: playbackEngineName() === 'mpv' ? 1 : webosShell ? 1.5 : 5,
       duration: Number(video.duration), position: Number(video.currentTime), paused: video.paused, ended: video.ended,
       stable_seconds: playback.stableSince ? Math.max(0, Date.now() - playback.stableSince) / 1000 : 0,
       started: playback.started, active: playback.generation === feedGeneration && isPlaybackPage() && !applicationInBackground && !applicationHidden() && !qualityPrevious });
@@ -4821,11 +4827,24 @@
         if (!data.path) throw new Error(uiText('content.noSource', '播放服务没有返回地址'));
         function attachPreparedSource() {
           if (generation !== feedGeneration || request.signal.aborted || !activePlayback) return;
+          var adoptedPrefetch = false;
+          if (webosShell && data.webos_media_prefetch && window.HongguoWebOSMediaPrefetch) {
+            var adopted = window.HongguoWebOSMediaPrefetch.adopt(data.path, video);
+            if (adopted && adopted !== video) {
+              video = adopted;
+              media = adopted;
+              if (playbackAudioHold) adopted.muted = true;
+              adopted.volume = Math.max(0, Math.min(1, playbackPreferences.volume / 100));
+              adopted.playbackRate = playbackPreferences.speed;
+              adopted.defaultPlaybackRate = playbackPreferences.speed;
+              adoptedPrefetch = adopted.__hongguoWebOSPrefetched === true;
+            }
+          }
           activePlayback.timing.ready_at = Date.now();
           activePlayback.mode = data.mode || 'full';
           activePlayback.rangeFallback = data.range_fallback || '';
           bindPlaybackPresentation(activePlayback, data.path);
-          video.src = data.path;
+          if (!adoptedPrefetch) video.src = data.path;
           stageNativePlaybackStartPosition(activePlayback.position);
           playbackQuality = data.quality || '';
           playbackQualities = data.qualities || [];
@@ -4834,7 +4853,7 @@
           video.classList.add('has-source');
           if (typeof syncNativePlaybackPageState === 'function') syncNativePlaybackPageState();
           placeholder.classList.add('is-hidden');
-          video.load();
+          if (!adoptedPrefetch) video.load();
           setPlayerStatus(episodeLoadingText(activePlayback.episode));
           if (!applicationHidden() && !applicationInBackground) playMedia(video).catch(function () { setPlayerStatus(''); revealControls(); showNotice(uiText('content.videoReadyConfirm', '视频已准备好，请按确认键开始播放')); });
           else { setPlayerStatus(''); revealControls(); }
