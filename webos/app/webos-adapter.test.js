@@ -36,6 +36,7 @@ var window = {
       } }); } });
     }
     if (String(input).indexOf('/api/v1/player/cache-session') >= 0) {
+      if (options.keepalive) return Promise.reject(new TypeError('Preflight request for request with keepalive specified is currently not supported'));
       var body = JSON.parse(options.body); cacheCalls.push(body);
       if (body.action === 'update' && rejectNextCacheUpdate) {
         rejectNextCacheUpdate = false;
@@ -93,6 +94,10 @@ async function run() {
   assert(!window.HongguoWebOS.sameMediaSource(absoluteMedia + '?other=1', media));
   assert(!window.HongguoWebOS.sameMediaSource(null, media));
   assert(!window.HongguoWebOS.sameMediaSource('', ''));
+  assert.strictEqual(window.HongguoWebOS.mediaPath(absoluteMedia), media);
+  assert.strictEqual(window.HongguoWebOS.mediaPath(media), media);
+  assert.strictEqual(window.HongguoWebOS.mediaPath('http://example.com' + media), '');
+  assert.strictEqual(window.HongguoWebOS.mediaPath(absoluteMedia + '?key=secret'), '');
   var video = new window.HTMLMediaElement();
   video.src = media;
   assert.strictEqual(video.src, absoluteMedia, 'the DOM keeps the real rewritten address');
@@ -113,6 +118,7 @@ async function run() {
   await new Promise(function (resolve) { setTimeout(resolve, 10); });
   assert.strictEqual(cacheCalls.filter(function (call) { return call.action === 'open'; }).length, 1);
   assert.strictEqual(cacheCalls[cacheCalls.length - 1].token, '0123456789abcdef01234567', 'playing source has a lease independent of active HTTP requests');
+  assert(fetchCalls.filter(function (call) { return String(call.input).indexOf('/api/v1/player/cache-session') >= 0; }).every(function (call) { return !call.options.keepalive; }), 'webOS 6 cache leases must not require unsupported keepalive preflights');
   var second = '/minireel-proxy/media/aaaaaaaaaaaaaaaaaaaaaaaa.mp4';
   video.removeAttribute('src'); video.setAttribute('src', second); video.src = media;
   await new Promise(function (resolve) { setTimeout(resolve, 10); });

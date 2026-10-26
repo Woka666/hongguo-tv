@@ -109,6 +109,19 @@ test('playback diagnostics show split episode transition timings',()=>{
   const mpvRows=Object.fromEntries(diagnostics.report(mpv).rows.map(x=>[x.label,x.value]));
   assert.match(mpvRows['MPV 切源耗时'],/停止边界 80ms.*FILE_LOADED 500ms.*输出就绪 900ms/);
 });
+test('webOS exposes preparation timings before a source exists and includes Range fallback costs',()=>{
+  const failed=snapshot({flags:{rangeRequested:true,preparing:true},core:{media_prepared:false,media_mode:'range',media_preparation_stage:'failed',media_resolve_ms:6000}});
+  let rows=Object.fromEntries(diagnostics.report(failed).rows.map(x=>[x.label,x.value]));
+  assert.match(rows['媒体准备耗时'],/接口解析 6000ms.*Range索引 未取得/);
+  assert.doesNotMatch(rows['读取模式'],/当前源/,'a pending mode is not reported as an attached source');
+  const fallback=snapshot({flags:{rangeRequested:true},core:{media_prepared:true,media_mode:'full',media_preparation_stage:'ready',media_range_fallback:'上游未支持 Range (HTTP 200)',media_resolve_ms:100,media_range_init_ms:200,media_download_ms:300,media_decrypt_ms:20}});
+  rows=Object.fromEntries(diagnostics.report(fallback).rows.map(x=>[x.label,x.value]));
+  assert.match(rows['媒体准备耗时'],/Range索引 200ms.*下载 300ms.*解密 20ms/);
+  assert.match(rows['读取模式'],/full/);
+  assert(Object.values(rows).some(value=>/上游未支持 Range/.test(value)));
+  fallback.core.media_range_fallback='request failed https://media.invalid/episode.mp4?key=secret';
+  assert.doesNotMatch(JSON.stringify(diagnostics.report(fallback)),/media\.invalid|secret/);
+});
 
 test('playback diagnostics report local route choice, switch reason, first frame and stage timings without source data',()=>{
   const s=snapshot({playbackRoute:{

@@ -21,6 +21,8 @@ var calendarRequest = null;
 var engagementRequests = [];
 var videoModelRequests = 0;
 var mediaDownloadRequests = 0;
+var videoSpade = '';
+var videoModelStatus = 200;
 var html = '<script>window._ROUTER_DATA=' + JSON.stringify({ loaderData: { detail_page: {
   seriesDetail: {
     series_id: seriesID,
@@ -54,7 +56,7 @@ https.request = function (options) {
     var body = html;
     if (options.path.indexOf('/novel/player/video_model/v1/') >= 0) {
       videoModelRequests++;
-      body = JSON.stringify({ data: { video_model: { video_list: [{ main_url: 'https://media.example.test/episode.mp4', video_meta: { vheight: 720, definition: '720P' }, encrypt_info: {} }] } } });
+      body = JSON.stringify({ data: { video_model: { video_list: [{ main_url: 'https://media.example.test/episode.mp4', video_meta: { vheight: 720, definition: '720P' }, encrypt_info: videoSpade ? { spade_a: videoSpade } : {} }] } } });
     }
     if (options.path.indexOf('/reading/bookapi/plan/v') >= 0) body = '{"code":0,"data":[]}';
     if (options.path.indexOf('/reading/distribution/category/landpage/v/') >= 0) {
@@ -75,7 +77,7 @@ https.request = function (options) {
     }
     process.nextTick(function () {
       var response = new PassThrough();
-      response.statusCode = 200;
+      response.statusCode = options.path.indexOf('/novel/player/video_model/v1/') >= 0 ? videoModelStatus : 200;
       req.emit('response', response);
       response.end(body);
     });
@@ -228,6 +230,87 @@ async function run() {
     var fallbackToken = crypto.createHash('sha256').update(seriesID + ':5234567890123456789').digest('hex').slice(0, 24);
     assert.strictEqual(rangeFallback.path, '/minireel-proxy/media/' + fallbackToken + '.mp4', 'foreground fallback uses the standard full-file URL');
     assert.strictEqual(videoModelRequests, 2, 'foreground preparation performs a fresh source resolution');
+    assert.strictEqual(rangeFallback.preparation_timing.media_mode, 'full');
+    ['media_resolve_ms', 'media_range_init_ms', 'media_download_ms', 'media_decrypt_ms'].forEach(function (name) {
+      assert(Number.isFinite(rangeFallback.preparation_timing[name]), 'fallback measures ' + name);
+    });
+
+    // A foreground request joining a failed speculative Range task may fall
+    // back, while the speculative caller must still fail without downloading.
+    var modelsBeforeJoin = videoModelRequests, downloadsBeforeJoin = mediaDownloadRequests;
+    var speculative = provider.prepare(seriesID, '7234567890123456789', '', false, 'range', true).then(function () { throw Error('prefetch should fail'); }, function (error) { return error; });
+    var foreground = provider.prepare(seriesID, '7234567890123456789', '', false, 'range', false);
+    var joined = await Promise.all([speculative, foreground]);
+    assert(/CENC key/.test(joined[0].message));
+    assert.strictEqual(joined[1].mode, 'full');
+    assert.strictEqual(joined[1].preparation_shared, true);
+    assert.strictEqual(videoModelRequests - modelsBeforeJoin, 1, 'foreground and prefetch share the source resolution');
+    assert.strictEqual(mediaDownloadRequests - downloadsBeforeJoin, 1, 'only foreground fallback downloads the full episode');
+
+    // Construct a non-secret test key in the supported spade envelope.
+    var decodedKey = Buffer.from('0' + '29'.repeat(16)), rawKey = Buffer.alloc(38), previous = [250, 85];
+    for (var keyIndex = 0; keyIndex < decodedKey.length; keyIndex++) {
+      var bitCount = keyIndex.toString(2).replace(/0/g, '').length;
+      rawKey[keyIndex + 1] = ((decodedKey[keyIndex] + 21 + bitCount) & 255) ^ previous[keyIndex % 2];
+      previous[keyIndex % 2] = rawKey[keyIndex + 1];
+    }
+    rawKey[0] = 52 ^ rawKey[1] ^ rawKey[2];
+    var tagSeed = rawKey[32] ^ rawKey[33];
+    Buffer.from('test').forEach(function (value, index) { rawKey[34 + index] = value ^ tagSeed; });
+    videoSpade = rawKey.toString('base64');
+    var originalOpen = rangeMedia.open, realNow = Date.now, rangeOpens = 0, resolveRange;
+    rangeMedia.open = function () {
+      rangeOpens++;
+      var source = { prefix: Buffer.alloc(16), samples: [], key: Buffer.alloc(16), length: 128, etag: '"fixture"' };
+      return rangeOpens === 1 ? new Promise(function (resolve) { resolveRange = function () { resolve(source); }; }) : Promise.resolve(source);
+    };
+    try {
+      var beforeRangeModels = videoModelRequests;
+      var rangePrefetch = provider.prepare(seriesID, '8234567890123456789', '', false, 'range', true);
+      await new Promise(function (resolve) { setImmediate(resolve); });
+      var rangeForeground = provider.prepare(seriesID, '8234567890123456789', '', false, 'range', false);
+      assert.strictEqual(provider.mediaDiagnostics('').media_preparation_stage, 'range_init', 'pending preparation is diagnosable before a media path exists');
+      assert.strictEqual(videoModelRequests - beforeRangeModels, 1);
+      videoModelStatus = 502;
+      await assert.rejects(provider.prepare(seriesID, '1134567890123456789', '', false, 'range', false));
+      videoModelStatus = 200;
+      resolveRange();
+      var preparedRange = await Promise.all([rangePrefetch, rangeForeground]);
+      assert.strictEqual(rangeOpens, 1, 'handoff shares the pending Range initialization');
+      assert.strictEqual(provider.mediaDiagnostics('').media_preparation_error_stage, 'resolve', 'a late previous source cannot overwrite the latest foreground failure');
+      assert.strictEqual(preparedRange[0].mode, 'range');
+      assert.strictEqual(preparedRange[1].path, preparedRange[0].path);
+      assert.strictEqual(preparedRange[1].preparation_shared, true);
+      var cachedRange = await provider.prepare(seriesID, '8234567890123456789', '', false, 'range', false);
+      assert.strictEqual(cachedRange.preparation_cached, true);
+      assert.strictEqual(rangeOpens, 1);
+      var diag = provider.mediaDiagnostics(preparedRange[0].path);
+      assert.strictEqual(diag.media_mode, 'range');
+      assert.strictEqual(diag.media_prepared, true);
+      assert(Number.isFinite(diag.media_resolve_ms) && Number.isFinite(diag.media_range_init_ms));
+      assert(!/media\.example|spade|292929|823456789/.test(JSON.stringify(preparedRange[0].preparation_timing)), 'timings contain no media URL, key or ID');
+      var otherRange = await provider.prepare(seriesID, '1034567890123456789', '', false, 'range', true);
+      var activeSession = provider.cacheSession({ action: 'open' }).session;
+      provider.cacheSession({ action: 'update', session: activeSession, revision: 1, token: otherRange.path.split('/').pop().replace('.mp4', '') });
+      var expiredAt = Date.now() + 120001;
+      Date.now = function () { return expiredAt; };
+      await provider.prepare(seriesID, '8234567890123456789', '', false, 'range', false);
+      assert.strictEqual(rangeOpens, 3, 'an expired source is replaced within the two-source limit without evicting the active source');
+      assert.strictEqual(mediaDownloadRequests - downloadsBeforeJoin, 1, 'Range preparation and refresh never download an entire episode');
+    } finally {
+      rangeMedia.open = originalOpen; Date.now = realNow; videoSpade = ''; videoModelStatus = 200;
+      if (activeSession) provider.cacheSession({ action: 'close', session: activeSession });
+    }
+    videoModelStatus = 502;
+    var beforeFailedDownload = mediaDownloadRequests;
+    try {
+      await assert.rejects(provider.prepare(seriesID, '9234567890123456789', '', false, 'range', false));
+      var failedReport = provider.mediaDiagnostics('');
+      assert.strictEqual(failedReport.media_preparation_error_stage, 'resolve');
+      assert(Number.isFinite(failedReport.media_resolve_ms));
+      assert.strictEqual(failedReport.media_range_init_ms, undefined);
+      assert.strictEqual(mediaDownloadRequests, beforeFailedDownload, 'a video-model failure cannot start a full-file fallback');
+    } finally { videoModelStatus = 200; }
     var diskDownload = rangeMedia.downloadFile;
     rangeMedia.downloadFile = function (_, destination) {
       fs.writeFileSync(destination, 'partial');

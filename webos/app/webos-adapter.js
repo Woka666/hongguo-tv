@@ -38,6 +38,12 @@
     return typeof value === 'string' && value.indexOf(SERVICE_BASE) === 0;
   }
 
+  function mediaPath(value) {
+    if (typeof value !== 'string') return '';
+    if (value.indexOf(SERVICE_BASE + '/') === 0) value = value.slice(SERVICE_BASE.length);
+    return /^\/minireel-proxy\/media\/[a-f0-9]{24}\.mp4$/.test(value) ? value : '';
+  }
+
   function sameMediaSource(actual, expected) {
     function absolute(value) {
       return value.indexOf('/minireel-proxy/media/') === 0 ? SERVICE_BASE + value : value;
@@ -51,6 +57,7 @@
     serviceBase: SERVICE_BASE,
     serviceMode: SERVICE_MODE,
     sameMediaSource: sameMediaSource,
+    mediaPath: mediaPath,
     appVersion: '',
     experimental: true,
     playbackVerified: false,
@@ -75,7 +82,10 @@
   var cacheRevision = 0, cacheToken = '', cacheElement = null, pageClosed = false;
   function cacheRequest(body) {
     return rawFetch.call(window, SERVICE_BASE + '/api/v1/player/cache-session', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), keepalive: true
+      // Chrome 79 rejects CORS preflights with keepalive before sending them.
+      // Ordinary requests keep playback leases working on webOS 6. Service
+      // shutdown or the next session clears a pin if page-exit delivery fails.
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
     }).then(function (response) {
       if (!response || !response.ok) throw new Error('媒体缓存会话连接失败');
       return response.json();
@@ -117,7 +127,7 @@
     }).catch(function () { cacheSession = ''; });
   }
   function trackMedia(element, value) {
-    var match = /^\/minireel-proxy\/media\/([a-f0-9]{24})\.mp4$/.exec(String(value || '').replace(SERVICE_BASE, ''));
+    var match = /^\/minireel-proxy\/media\/([a-f0-9]{24})\.mp4$/.exec(mediaPath(value));
     if (!match && cacheElement !== element) return;
     cacheElement = match ? element : null;
     cacheToken = match ? match[1] : '';

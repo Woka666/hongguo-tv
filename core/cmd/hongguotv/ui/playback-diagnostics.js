@@ -18,6 +18,7 @@
   var networkNames = ['diagnostic.network0', 'diagnostic.network1', 'diagnostic.network2', 'diagnostic.network3'];
   var errorNames = ['diagnostic.error0', 'diagnostic.error1', 'diagnostic.error2', 'diagnostic.error3', 'diagnostic.error4'];
   function text(value, limit) { return typeof value === 'string' ? value.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, limit || 90) : ''; }
+  function fallbackReason(value) { return text(typeof value === 'string' ? value.replace(/https?:\/\/\S+/gi, '[redacted]') : '', 180); }
   function num(value) { return typeof value === 'number' && isFinite(value) ? Math.max(0, value) : 0; }
   function errorCode(value) { return typeof value === 'number' && isFinite(value) ? Math.round(value) : 0; }
   function metric(value) { return typeof value === 'number' && isFinite(value) && value >= 0 ? Math.floor(value) : tr('diagnostic.notObtained'); }
@@ -91,8 +92,9 @@
     add(tr('diagnostic.playbackClock'), clock(video.position) + ' / ' + (video.duration ? clock(video.duration) : tr('diagnostic.durationUnknown')) + ' · ' + tr('diagnostic.bufferedSeconds', { seconds: Math.floor(video.buffered) }));
     add(tr('diagnostic.mediaState'), 'R' + video.ready + ' ' + tr(readyNames[video.ready] || 'diagnostic.unknown') + ' / N' + video.network + ' ' + tr(networkNames[video.network] || 'diagnostic.unknown'));
     add(tr('diagnostic.playbackState'), (video.ended ? tr('diagnostic.ended') : video.paused ? tr('diagnostic.paused') : tr('diagnostic.playing')) + (video.seeking ? ' · ' + tr('diagnostic.seeking') : '') + (flags.background ? ' · ' + tr('diagnostic.background') : ''));
-    if (flags.rangeRequested || flags.playbackMode) add(tr('diagnostic.readMode'), (flags.rangeRequested ? tr('diagnostic.rangeMode') : tr('diagnostic.standardPlayback')) + (flags.playbackMode ? ' · ' + tr('diagnostic.currentSource', { source: text(flags.playbackMode, 12) }) : ''));
-    if (flags.rangeFallback) add(tr('diagnostic.playbackFallback'), text(flags.rangeFallback, 72));
+    var actualMode = flags.playbackMode || (core.media_prepared ? core.media_mode : '');
+    if (flags.rangeRequested || actualMode) add(tr('diagnostic.readMode'), (flags.rangeRequested ? tr('diagnostic.rangeMode') : tr('diagnostic.standardPlayback')) + (actualMode ? ' · ' + tr('diagnostic.currentSource', { source: text(actualMode, 12) }) : ''));
+    if (flags.rangeFallback || core.media_range_fallback) add(tr('diagnostic.playbackFallback'), fallbackReason(flags.rangeFallback || core.media_range_fallback));
     if (native.state || native.surface || native.error_kind) {
       var nativeState = text(native.state, 24) || tr('diagnostic.unknown');
       var nativeCodec = [text(native.video_decoder, 48), text(native.video_mime, 32)].filter(Boolean).join(' / ');
@@ -134,12 +136,15 @@
         source: millis(timing.source_ready_ms), total: millis(timing.total_ms)
       }));
     }
-    if (core.media_prepared && core.media_mode) {
+    if (core.media_mode && (core.media_prepared || core.media_preparation_stage)) {
       var mediaTiming = core.media_mode === 'range' ? tr('diagnostic.rangePreparationTiming', {
         resolve: millis(core.media_resolve_ms), range: millis(core.media_range_init_ms)
       }) : tr('diagnostic.fullPreparationTiming', {
         resolve: millis(core.media_resolve_ms), download: millis(core.media_download_ms), decrypt: millis(core.media_decrypt_ms)
       });
+      if (core.media_mode === 'full' && core.media_range_fallback) mediaTiming = tr('diagnostic.rangePreparationTiming', {
+        resolve: millis(core.media_resolve_ms), range: millis(core.media_range_init_ms)
+      }) + ' · ' + mediaTiming;
       add(tr('diagnostic.mediaPreparationTiming'), mediaTiming);
     }
     if (native.engine === 'mpv' && (native.last_stop_fence_ms > 0 || typeof native.load_to_file_loaded_ms === 'number')) {

@@ -390,6 +390,9 @@
   // Bounded, memory-only diagnostics. No drama IDs, titles or account data.
   window.HongguoTVPlaybackTiming = { snapshot: function () { return playbackTiming.map(function (item) { return Object.assign({}, item); }); } };
   var episodePrefetch = HongguoEpisodePrefetch.create({
+    maxRetries: window.HongguoWebOS ? 1 : 0,
+    retryDelayMs: 3000,
+    maxAgeMs: window.HongguoWebOS ? 120000 : 0,
     lookup: function (info, signal) {
       return getDetail(info.item, signal).then(function (detail) {
         var candidates = HongguoEpisodePrefetch.nextUnlockedEpisodes(detail, info.episode, 4);
@@ -2587,6 +2590,7 @@
     renderPlaybackDiagnostics(snapshot);
     // Read only local status for this exact source; never resolve or fetch media.
     var path = /^\/minireel-proxy\/media\/[a-f0-9]{24}\.mp4$/.test(source) ? source : '';
+    if (window.HongguoWebOS && typeof window.HongguoWebOS.mediaPath === 'function') path = window.HongguoWebOS.mediaPath(source);
     var request = new XMLHttpRequest(); diagnosticRequest = request;
     request.open('GET', '/api/v1/player/diagnostics?media=' + encodeURIComponent(path), true); request.timeout = 2500;
     function finish(core) {

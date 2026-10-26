@@ -25,6 +25,9 @@
   var fullDownloads = Object.create(null);
   var rangeSources = Object.create(null);
   var mediaStatus = Object.create(null);
+  var preparationReports = Object.create(null);
+  var lastForegroundPreparation = null;
+  var RANGE_PREPARATION_TTL = 120000;
   var cacheRoot = '';
   var mediaCache = null;
   var lastVideoModelDiagnostic = null;
@@ -483,6 +486,25 @@
     fs.writeFileSync(file, buffer, { mode: 384 });
   }
 
+  function rememberPreparation(token, report) {
+    delete preparationReports[token];
+    preparationReports[token] = report;
+    var keys = Object.keys(preparationReports);
+    while (keys.length > 16) delete preparationReports[keys.shift()];
+  }
+
+  function measurePreparation(report, stage, field, action) {
+    var start = Date.now();
+    report.media_preparation_stage = stage;
+    return Promise.resolve().then(action).then(function (value) {
+      report[field] = Math.max(0, Date.now() - start);
+      return value;
+    }, function (error) {
+      report[field] = Math.max(0, Date.now() - start);
+      throw error;
+    });
+  }
+
   function prepare(seriesID, vid, quality, fallback, mode, prefetch) {
     if (!validID(seriesID) || !validID(vid)) return Promise.reject(fail('播放参数无效'));
     quality = String(quality || '').trim().toUpperCase();
@@ -490,28 +512,58 @@
     var wantsRange = String(mode || '') === 'range';
     var fullToken = mediaToken(seriesID, vid, quality, fallback, 'full');
     var token = wantsRange ? mediaToken(seriesID, vid, quality, fallback, 'range') : fullToken;
-    var jobKey = token + (prefetch ? ':prefetch' : '');
+    var jobKey = token;
     var root = ensureCacheRoot(); var dir = path.join(root, token); var file = path.join(dir, token + '.mp4');
     mediaCache.prune(false);
-    if (rangeSources[token] && wantsRange) {
+    function resultWithReport(result, report, shared, cached) {
+      // In-flight reports were selected when the request began. A late result
+      // from an older drama must not replace a newer foreground diagnostic.
+      if (!prefetch && cached) lastForegroundPreparation = report;
+      return Object.assign({}, result, { preparation_timing: Object.assign({}, report), preparation_shared: !!shared, preparation_cached: !!cached });
+    }
+    function useJob(record, shared) {
+      if (!prefetch) { record.foreground = true; lastForegroundPreparation = record.report; }
+      function failed(error) {
+        if (!prefetch || !record.foreground) {
+          record.report.media_preparation_error_stage = record.report.media_preparation_stage;
+          record.report.media_preparation_stage = 'failed';
+        }
+        throw error;
+      }
+      return record.promise.catch(function (error) {
+        // The shared task is Range-only. Each caller retains its own fallback
+        // policy: speculative callers never start a complete media download.
+        if (!wantsRange || prefetch || !record.fullFallback) throw error;
+        return record.fullFallback(error);
+      }).then(function (result) {
+        record.report.media_preparation_stage = 'ready';
+        return resultWithReport(result, record.report, shared, false);
+      }, failed);
+    }
+    if (rangeSources[token] && wantsRange && Date.now() - rangeSources[token].preparedAt < RANGE_PREPARATION_TTL) {
       rangeSources[token].lastUsedAt = Date.now();
       mediaCache.touch(token, true);
-      return Promise.resolve({ path: '/minireel-proxy/media/' + token + '.mp4', quality: rangeSources[token].quality || quality || '', qualities: [], vid: vid, mode: 'range' });
+      return Promise.resolve(resultWithReport({ path: '/minireel-proxy/media/' + token + '.mp4', quality: rangeSources[token].quality || quality || '', qualities: [], vid: vid, mode: 'range' }, rangeSources[token].preparationTiming, false, true));
     }
-    if (jobs[jobKey]) return jobs[jobKey];
+    if (jobs[jobKey]) return useJob(jobs[jobKey], true);
     if (!wantsRange && fileExists(file)) {
       mediaCache.touch(token, true);
-      return Promise.resolve({ path: '/minireel-proxy/media/' + token + '.mp4', quality: quality || '', qualities: [], vid: vid, mode: 'full' });
+      return Promise.resolve(resultWithReport({ path: '/minireel-proxy/media/' + token + '.mp4', quality: quality || '', qualities: [], vid: vid, mode: 'full' }, preparationReports[token] || { media_mode: 'full', media_preparation_stage: 'ready' }, false, true));
     }
-    var job = videoOptions(vid).then(function (options) {
+    var record = { report: { media_mode: wantsRange ? 'range' : 'full', media_preparation_stage: 'resolve' } };
+    rememberPreparation(token, record.report);
+    var job = measurePreparation(record.report, 'resolve', 'media_resolve_ms', function () { return videoOptions(vid); }).then(function (options) {
       var selected = choose(options, quality, fallback);
       var qualities = options.map(function (x) { return x.quality; }).filter(Boolean);
       function prepareFull(rangeError) {
+        record.report.media_mode = 'full';
+        rememberPreparation(fullToken, record.report);
+        if (rangeError) record.report.media_range_fallback = String(rangeError.message || '按需读取不可用，已使用整集播放模式').replace(/https?:\/\/\S+/gi, '[redacted]').slice(0, 180);
         var fullDir = path.join(root, fullToken);
         var fullFile = path.join(fullDir, fullToken + '.mp4');
         function withFallback(result) {
           var output = Object.assign({}, result);
-          if (rangeError) output.range_fallback = String(rangeError.message || '按需读取不可用，已使用整集播放模式');
+          if (rangeError) output.range_fallback = record.report.media_range_fallback;
           return output;
         }
         if (fileExists(fullFile)) {
@@ -521,12 +573,13 @@
         if (fullDownloads[fullToken]) return fullDownloads[fullToken].then(withFallback);
         var releaseDownload = mediaCache.protect(fullToken);
         var temp = fullFile + '.part';
-        var download = Promise.resolve().then(function () {
+        var download = measurePreparation(record.report, 'download', 'media_download_ms', function () {
           mediaCache.reserve(fullToken, 1);
           mkdirp(fullDir, 448);
           return downloadFile(selected.url, temp, fullToken);
         }).then(function () {
-          if (selected.key) decryptMP4(temp, selected.key);
+          return measurePreparation(record.report, 'decrypt', 'media_decrypt_ms', function () { if (selected.key) decryptMP4(temp, selected.key); });
+        }).then(function () {
           fs.renameSync(temp, fullFile);
           mediaCache.touch(fullToken, true);
           return { path: '/minireel-proxy/media/' + fullToken + '.mp4', quality: selected.quality, qualities: qualities, vid: vid, mode: 'full' };
@@ -549,12 +602,11 @@
         return sharedDownload.then(withFallback);
       }
       if (!wantsRange) return prepareFull(null);
-      if (!selected.key) {
-        var missingKey = fail('当前视频没有 CENC key');
-        if (prefetch) throw missingKey;
-        return prepareFull(missingKey);
-      }
-      return rangeMedia.open(selected.url, selected.key, { vid: vid, quality: selected.quality }).then(function (source) {
+      record.fullFallback = prepareFull;
+      return measurePreparation(record.report, 'range_init', 'media_range_init_ms', function () {
+        if (!selected.key) throw fail('当前视频没有 CENC key');
+        return rangeMedia.open(selected.url, selected.key, { vid: vid, quality: selected.quality });
+      }).then(function (source) {
         source.quality = selected.quality;
         source.refresh = function () {
           return videoOptions(vid).then(function (freshOptions) {
@@ -563,23 +615,23 @@
           });
         };
         source.lastUsedAt = Date.now();
+        source.preparedAt = Date.now();
+        source.preparationTiming = record.report;
         trimRangeSources(token, source);
         rangeSources[token] = source;
         mediaCache.touch(token, true);
         return { path: '/minireel-proxy/media/' + token + '.mp4', quality: selected.quality, qualities: qualities, vid: vid, mode: 'range' };
-      }).catch(function (rangeError) {
-        if (prefetch) throw rangeError;
-        return prepareFull(rangeError);
       });
     }).then(function (result) {
-      if (jobs[jobKey] === job) delete jobs[jobKey];
+      if (jobs[jobKey] === record) delete jobs[jobKey];
       return result;
     }, function (error) {
-      if (jobs[jobKey] === job) delete jobs[jobKey];
+      if (jobs[jobKey] === record) delete jobs[jobKey];
       throw error;
     });
-    jobs[jobKey] = job;
-    return job;
+    record.promise = job;
+    jobs[jobKey] = record;
+    return useJob(record, false);
   }
 
   function parseMediaByteRange(value, length) {
@@ -1067,6 +1119,8 @@
     var match = /^\/minireel-proxy\/media\/([a-f0-9]{24})\.mp4$/.exec(String(mediaPath || ''));
     ensureCacheRoot();
     result.media_cache = mediaCache.diagnostics();
+    var report = match ? preparationReports[match[1]] : lastForegroundPreparation;
+    if (report && (match || report.media_preparation_stage !== 'ready')) Object.assign(result, report);
     if (!match) return result;
     var token = match[1], file = path.join(ensureCacheRoot(), token, token + '.mp4'), stat;
     try { stat = fs.statSync(file); result.media_prepared = stat.isFile(); result.media_bytes = stat.size; result.media_state = result.media_prepared ? 'ready' : 'missing'; } catch (ignored) { result.media_state = jobs[token] ? 'preparing' : 'missing'; }
@@ -1097,12 +1151,14 @@
     keys.sort(function (a, b) { return Number(rangeSources[a].lastUsedAt || 0) - Number(rangeSources[b].lastUsedAt || 0); });
     function totalBytes() {
       return Object.keys(rangeSources).reduce(function (total, key) {
+        if (key === keepToken) return total;
         var source = rangeSources[key];
         return total + source.prefix.length + source.samples.length * 128 + (source.key ? source.key.length : 0);
       }, metadataBytes);
     }
-    while ((Object.keys(rangeSources).length >= 2 || totalBytes() > 24 * 1024 * 1024) && keys.length) delete rangeSources[keys.shift()];
-    if (Object.keys(rangeSources).length >= 2) throw fail('正在使用的 Range 索引已占满缓存，请稍后重试');
+    function otherCount() { return Object.keys(rangeSources).filter(function (key) { return key !== keepToken; }).length; }
+    while ((otherCount() >= 2 || totalBytes() > 24 * 1024 * 1024) && keys.length) delete rangeSources[keys.shift()];
+    if (otherCount() >= 2) throw fail('正在使用的 Range 索引已占满缓存，请稍后重试');
     if (totalBytes() > 24 * 1024 * 1024) throw fail('Range 索引缓存超过内存限制');
   }
 

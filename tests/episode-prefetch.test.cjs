@@ -95,3 +95,57 @@ test('a late metadata reply must match the episode adopted by the foreground',as
   const next=f.p.consume(target({vid:'999'}));lookup.resolve(target());
   assert.equal(await next.promise,null);assert.equal(f.calls.length,0);
 });
+test('webOS retries a failed prefetch once after the delay and only on an eligible playback tick',async()=>{
+  let now=1000, attempts=0;
+  const p=create({now:()=>now,maxRetries:1,retryDelayMs:3000,lookup:async()=>target(),prepare:async()=>{attempts++;throw Error('502');}});
+  p.maybe(info());await tick();assert.equal(attempts,1);
+  now=3999;p.maybe(info());await tick();assert.equal(attempts,1);
+  now=4000;
+  for(const extra of [{paused:true},{active:false},{stable_seconds:0},{ended:true}]) p.maybe(info(extra));
+  await tick();assert.equal(attempts,1);
+  p.maybe(info());p.maybe(info());await tick();assert.equal(attempts,2);
+  now=10000;p.maybe(info());await tick();assert.equal(attempts,2);
+  assert.equal(await p.consume(target()).promise,null);
+});
+test('a successful retry is reused and never starts a third prepare',async()=>{
+  let now=1000, attempts=0;
+  const p=create({now:()=>now,maxRetries:1,lookup:async()=>target(),prepare:async()=>{if(++attempts===1)throw Error('502');return {path:'/retry.mp4'};}});
+  p.maybe(info());await tick();now+=3000;p.maybe(info());await tick();
+  now+=3000;p.maybe(info());await tick();
+  assert.equal(attempts,2);assert.equal((await p.consume(target()).promise).path,'/retry.mp4');
+});
+test('webOS rejects expired prefetches while other platforms keep their existing lifetime',async()=>{
+  for(const maxAgeMs of [120000,0]) {
+    let now=1000;
+    const p=create({now:()=>now,maxAgeMs,lookup:async()=>target(),prepare:async()=>({path:'/prepared.mp4'})});
+    p.maybe(info());await tick();now+=120000;
+    const handoff=p.consume(target());
+    assert.equal(!!handoff,maxAgeMs===0);
+  }
+});
+test('webOS refreshes an expired success near the end using the same bounded extra attempt',async()=>{
+  let now=1000, attempts=0;
+  const p=create({now:()=>now,maxRetries:1,maxAgeMs:120000,lookup:async()=>target(),prepare:async()=>({path:'/prepared-'+(++attempts)+'.mp4'})});
+  p.maybe(info({duration:300}));await tick();
+  now+=120000;p.maybe(info({duration:300,position:130}));await tick();assert.equal(attempts,1);
+  now+=100000;p.maybe(info({duration:300,position:270}));await tick();assert.equal(attempts,2);
+  now+=1000;assert.equal((await p.consume(target()).promise).path,'/prepared-2.mp4');
+});
+test('cancel discards a failed retry candidate and a claimed lookup even without AbortController',async()=>{
+  let now=1000, attempts=0;
+  const p=create({now:()=>now,maxRetries:1,lookup:async()=>target(),prepare:async()=>{attempts++;throw Error('502');}});
+  p.maybe(info());await tick();p.cancel();now+=3000;
+  assert.equal(p.consume(target()),null);assert.equal(attempts,1);
+  const original=global.AbortController;
+  try {
+    global.AbortController=undefined;
+    const lookup=deferred();let prepared=0;
+    const q=create({lookup:()=>lookup.promise,prepare:async()=>{prepared++;return {path:'/late.mp4'};}});
+    q.maybe(info());await tick();const handoff=q.consume(target());handoff.cancel();
+    lookup.resolve(target());assert.equal(await handoff.promise,null);assert.equal(prepared,0);
+    const media=deferred();
+    const r=create({lookup:async()=>target(),prepare:()=>media.promise});
+    r.maybe(info());await tick();const claimed=r.consume(target());claimed.cancel();
+    media.resolve({path:'/cancelled.mp4'});assert.equal(await claimed.promise,null);
+  } finally {global.AbortController=original;}
+});
