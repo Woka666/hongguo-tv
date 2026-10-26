@@ -7,6 +7,14 @@ node_bin=${NODE:-node}
 "$node_bin" --check "$repo_dir/scripts/run_webos_http_direct_service.js"
 "$node_bin" --check "$repo_dir/webos/service/range-media.js"
 "$node_bin" --check "$repo_dir/webos/app/webos-updates.js"
+"$node_bin" --check "$repo_dir/webos/app/webos-audio-controller.js"
+"$node_bin" --check "$repo_dir/webos/app/webos-audio.js"
+"$node_bin" --check "$repo_dir/webos/app/webos-audio-worker.js"
+"$node_bin" --check "$repo_dir/webos/app/webos-wsola.js"
+"$node_bin" --check "$repo_dir/webos/service/audio-media.js"
+"$node_bin" --check "$repo_dir/webos/service/audio-range.js"
+"$node_bin" --check "$repo_dir/webos/service/audio-multipart.js"
+"$node_bin" --check "$repo_dir/webos/service/audio-cancel.js"
 
 "$node_bin" - "$repo_dir" <<'NODE'
 var fs = require('fs');
@@ -90,6 +98,12 @@ if (app.id !== 'com.aston314.hongguo.webos.verify') throw new Error('staging app
 if (service.id !== 'com.aston314.hongguo.webos.verify.service') throw new Error('staging service id was not isolated');
 if (adapter.indexOf("var SERVICE_MODE = \"http-direct\";") < 0 || adapter.indexOf("var SERVICE_BASE = \"http://192.168.2.124:7655\";") < 0) throw new Error('staging HTTP configuration was not injected');
 if (fs.existsSync(path.join(root, 'app', 'webos-stage-manifest.json')) === false) throw new Error('staging manifest missing');
+var html = fs.readFileSync(path.join(root, 'app', 'index.html'), 'utf8');
+var controllerAt = html.indexOf('src="./webos-audio-controller.js"');
+var audioAt = html.indexOf('src="./webos-audio.js"');
+if (controllerAt < 0 || audioAt <= controllerAt || audioAt >= html.indexOf('src="./app.js"')) throw new Error('webOS audio modules must load before the shared application');
+['webos-audio-worker.js', 'webos-wsola.js'].forEach(function (file) { if (!fs.existsSync(path.join(root, 'app', file))) throw new Error('audio worker asset missing'); });
+['audio-media.js', 'audio-range.js', 'audio-cancel.js', 'audio-multipart.js'].forEach(function (file) { if (!fs.existsSync(path.join(root, 'service', file))) throw new Error('audio service asset missing'); });
 if (fs.readFileSync(path.join(root, 'app', 'webos-simulator-config.js'), 'utf8').indexOf('http://127.0.0.1:17658/report') < 0) throw new Error('staging report URL was not injected');
 console.log('webOS staged configuration: PASS');
 NODE

@@ -315,6 +315,11 @@
           <div class="app-update-actions"><button class="auto-cinema-action account-action" id="auto-cinema-toggle" data-focus="auto-cinema-toggle" aria-pressed="true" data-i18n="settings.autoCinemaEnabled">已开启</button></div>
           <p id="auto-cinema-state" role="status" aria-live="polite"></p>
         </div>
+        <div class="settings-card app-update-card is-hidden" id="webos-audio-settings">
+          <h2 data-i18n="settings.audibleSpeed">有声倍速（实验）</h2>
+          <p data-i18n="settings.audibleSpeedDescription">仅用于 webOS，默认关闭。开启后，倍速播放会额外读取音频并占用内存；准备失败或设备处理跟不上时恢复有声 1 倍速。</p>
+          <div class="app-update-actions"><button class="webos-audio-action account-action" id="webos-audio-toggle" data-focus="webos-audio-toggle" aria-pressed="false" data-i18n="settings.autoCinemaDisabled">已关闭</button></div>
+        </div>
         <div class="settings-card app-update-card" id="app-update-card">
           <h2 data-i18n="settings.updates">版本更新</h2>
           <p><span data-i18n="settings.currentVersion">当前版本 </span><strong id="app-current-version" data-i18n="ui.readingVersion">读取中…</strong></p>

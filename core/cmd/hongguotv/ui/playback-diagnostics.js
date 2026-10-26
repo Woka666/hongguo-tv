@@ -129,6 +129,12 @@
     var visibility = native.engine === 'mpv' ? ' · ' + tr('diagnostic.nativeLayer') + (typeof native.surface_visible === 'boolean' ? (native.surface_visible && native.surface_attached ? tr('diagnostic.visible') : tr('diagnostic.hidden')) : tr('diagnostic.pending')) : ' · ' + tr('diagnostic.video') + (flags.videoVisible ? tr('diagnostic.surfaceVisible') : tr('diagnostic.hidden'));
     add(tr('diagnostic.videoProtection'), (flags.loading || flags.preparing ? tr('diagnostic.loadingLayer') : tr('diagnostic.loadingRemoved')) + visibility + (flags.waiting ? ' · ' + tr('diagnostic.waitingData') : ''));
     add(tr('diagnostic.soundState'), (flags.audioHeld ? tr('diagnostic.temporaryMute') : video.muted || !video.volume ? tr('diagnostic.playerMute') : tr('diagnostic.unmute')) + ' · ' + tr('diagnostic.volume', { value: Math.round(video.volume * 100) + '%' }));
+    if (native.webos_audio) {
+      var audio = native.webos_audio;
+      add('Web Audio / WSOLA', text(audio.phase, 20) + ' · ' + num(audio.requested_rate) + 'x / video ' + num(audio.actual_video_rate) +
+        'x · PCM ' + Math.round(num(audio.pcm_bytes) / 1024 / 1024) + 'MiB · sync ' +
+        (typeof audio.sync_error_ms === 'number' ? Math.round(audio.sync_error_ms) : 0) + 'ms' + (audio.error_code ? ' · ' + text(audio.error_code, 40) : ''));
+    }
     if (snapshot.timing) {
       var timing = snapshot.timing;
       add(tr('diagnostic.transitionTiming'), tr('diagnostic.transitionTimingValue', {

@@ -53,6 +53,9 @@ mkdir -p "$app_stage" "$service_stage"
 cp -R "$repo_dir/core/cmd/hongguotv/ui/." "$app_stage/"
 cp "$repo_dir/webos/appinfo.json" "$app_stage/appinfo.json"
 cp "$repo_dir/webos/app/webos-adapter.js" "$app_stage/webos-adapter.js"
+for audio_asset in webos-audio-controller.js webos-audio.js webos-audio-worker.js webos-wsola.js; do
+  cp "$repo_dir/webos/app/$audio_asset" "$app_stage/$audio_asset"
+done
 cp "$repo_dir/webos/app/webos-updates.js" "$app_stage/webos-updates.js"
 cp "$repo_dir/webos/service/update-manifest.js" "$app_stage/webos-update-manifest.js"
 node - "$app_stage/webos-adapter.js" "$app_stage/appinfo.json" <<'NODE'
@@ -85,6 +88,7 @@ sed -i.bak \
   "$index"
 rm -f "$index.bak"
 sed -i.bak 's#<script src="./compat.js"></script>#<script src="./webOSTVjs-1.2.13/webOSTV.js"></script><script src="./webos-update-manifest.js"></script><script src="./webos-updates.js"></script><script src="./webos-adapter.js"></script><script src="./compat.js"></script>#' "$index"
+sed -i.bak 's#<script src="./app.js"></script>#<script src="./webos-audio-controller.js"></script><script src="./webos-audio.js"></script><script src="./app.js"></script>#' "$index"
 rm -f "$index.bak"
 
 if [ -n "$stage_output" ]; then

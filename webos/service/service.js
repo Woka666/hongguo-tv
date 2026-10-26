@@ -140,6 +140,24 @@
         if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'METHOD_NOT_ALLOWED' }, req);
         return bodyJSON(req, 1024).then(function (body) { return provider.cacheSession(body); }).then(function (result) { data(req, res, result); }, function (error) { failure(req, res, error); });
       }
+      if (pathName === '/api/v1/player/audio') {
+        if (req.method !== 'GET') return json(res, 405, { ok: false, error: 'METHOD_NOT_ALLOWED' }, req);
+        var audioAbort = require('./audio-cancel').create();
+        function stopAudio() { audioAbort.abort(); }
+        function detachAudio() { req.removeListener('aborted', stopAudio); res.removeListener('close', stopAudio); }
+        req.once('aborted', stopAudio); res.once('close', stopAudio);
+        return provider.prepareAudio(String(q.media || ''), audioAbort.signal).then(function (audio) {
+          detachAudio(); if (res.destroyed || audioAbort.signal.aborted) return;
+          res.statusCode = 200; cors(res, req.headers.origin);
+          res.setHeader('Content-Type', 'audio/mp4');
+          res.setHeader('Content-Length', audio.body.length);
+          res.setHeader('Cache-Control', 'no-store');
+          res.setHeader('Access-Control-Expose-Headers', 'Content-Length, X-Hongguo-Audio-Duration, X-Hongguo-Audio-Channels');
+          res.setHeader('X-Hongguo-Audio-Duration', String(audio.duration));
+          res.setHeader('X-Hongguo-Audio-Channels', String(audio.channels));
+          res.end(audio.body);
+        }, function (error) { detachAudio(); if (!res.destroyed && !audioAbort.signal.aborted) failure(req, res, error); });
+      }
       if (pathName.indexOf('/minireel-proxy/media/') === 0) {
         return provider.serveMedia(req, res, pathName.slice('/minireel-proxy/media/'.length).replace(/\.mp4$/, ''));
       }

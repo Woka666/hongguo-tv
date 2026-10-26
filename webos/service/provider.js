@@ -14,6 +14,8 @@
   var passportSign = require('./passport-sign');
   var rangeMedia = require('./range-media');
   var createMediaCache = require('./media-cache');
+  var audioMedia = require('./audio-media');
+  var audioRange = require('./audio-range'), audioCancel = require('./audio-cancel');
 
   var API_BASE = 'https://api5-normal-sinfonlineb.fqnovel.com';
   var WEB_BASE = 'https://hongguoduanju.com';
@@ -25,6 +27,7 @@
   var fullDownloads = Object.create(null);
   var rangeSources = Object.create(null);
   var mediaStatus = Object.create(null);
+  var audioJobs = Object.create(null), audioCache = [];
   var preparationReports = Object.create(null);
   var lastForegroundPreparation = null;
   var RANGE_PREPARATION_TTL = 120000;
@@ -632,6 +635,51 @@
     record.promise = job;
     jobs[jobKey] = record;
     return useJob(record, false);
+  }
+
+  function prepareAudio(mediaPath, signal) {
+    if (signal && signal.aborted) return Promise.reject(audioCancel.error(signal));
+    var match = /^\/minireel-proxy\/media\/([a-f0-9]{24})\.mp4$/.exec(String(mediaPath || ''));
+    if (!match) return Promise.reject(fail('音频请求不是当前本机媒体', 400, 'WEBOS_AUDIO_SOURCE'));
+    var token = match[1], now = Date.now();
+    audioCache = audioCache.filter(function (entry) { return now - entry.at < 120000; });
+    var cached = audioCache.filter(function (entry) { return entry.token === token; })[0];
+    if (cached) { cached.at = now; return Promise.resolve(cached.value); }
+    function join(record) {
+      record.users++;
+      return new Promise(function (resolve, reject) {
+        var finished = false;
+        function leave() {
+          if (finished) return false; finished = true;
+          if (signal) signal.removeEventListener('abort', aborted);
+          record.users--;
+          if (!record.done && !record.users) record.cancel.abort();
+          return true;
+        }
+        function aborted() { if (leave()) reject(audioCancel.error(signal)); }
+        if (signal) { signal.addEventListener('abort', aborted); if (signal.aborted) aborted(); }
+        record.promise.then(function (value) { if (leave()) resolve(value); }, function (error) { if (leave()) reject(error); });
+      });
+    }
+    if (audioJobs[token] && !audioJobs[token].cancel.signal.aborted) return join(audioJobs[token]);
+    if (Object.keys(audioJobs).length >= 2) return Promise.reject(fail('音频准备繁忙，请稍后重试', 503, 'WEBOS_AUDIO_BUSY'));
+    var root = ensureCacheRoot(), source = rangeSources[token], file = path.join(root, token, token + '.mp4');
+    if (!source && !fileExists(file)) return Promise.reject(fail('当前播放源尚未准备好', 404, 'WEBOS_AUDIO_NOT_READY'));
+    var release = mediaCache.protect(token);
+    var record = { users: 0, done: false, cancel: audioCancel.create() };
+    var deadline = setTimeout(function () { record.cancel.abort('WEBOS_AUDIO_TIMEOUT'); }, 18000);
+    function finish() { record.done = true; clearTimeout(deadline); if (audioJobs[token] === record) delete audioJobs[token]; release(); }
+    record.promise = Promise.resolve().then(function () {
+      audioCancel.check(record.cancel.signal);
+      return source ? audioMedia.buildBatched(source.prefix, source.length, function (spans, currentSignal) { return audioRange.read(source, spans, currentSignal); }, record.cancel.signal) : audioMedia.fromFile(file, record.cancel.signal);
+    }).then(function (value) {
+      audioCancel.check(record.cancel.signal);
+      audioCache.push({ token: token, at: Date.now(), value: value });
+      audioCache.sort(function (a, b) { return a.at - b.at; });
+      while (audioCache.length > 2 || audioCache.reduce(function (n, entry) { return n + entry.value.body.length; }, 0) > 16 * 1024 * 1024) audioCache.shift();
+      return value;
+    }).then(function (value) { finish(); return value; }, function (error) { record.cancel.abort(); finish(); throw error; });
+    audioJobs[token] = record; return join(record);
   }
 
   function parseMediaByteRange(value, length) {
@@ -1262,14 +1310,18 @@
   }
 
   module.exports = {
-    prepare: prepare, serveMedia: serveMedia, category: category,
+    prepare: prepare, prepareAudio: prepareAudio, serveMedia: serveMedia, category: category,
     recommend: recommend, newSeries: newSeries, calendar: calendar,
     rank: rank, search: search, detail: detail, seasons: seriesSeasons,
     suggestions: suggestions, actorWorks: actorWorks, engagement: engagement, discussion: discussion, replies: replies,
     radar: radar, library: library, changeLibrary: changeLibrary,
     dataDirectory: dataDirectory,
     startCache: function () { ensureCacheRoot(); mediaCache.start(); },
-    closeCache: function () { if (mediaCache) mediaCache.close(); },
+    closeCache: function () {
+      Object.keys(audioJobs).forEach(function (key) { audioJobs[key].cancel.abort(); });
+      audioRange.close(); audioCache = [];
+      if (mediaCache) mediaCache.close();
+    },
     cacheSession: function (body) { ensureCacheRoot(); return mediaCache.updateSession(body); },
     searchHistory: searchHistory, mediaDiagnostics: mediaDiagnostics, parseMediaByteRange: parseMediaByteRange,
     videoModelDiagnostics: videoModelDiagnostics, inspectVideoModel: inspectVideoModel,

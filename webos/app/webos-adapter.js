@@ -69,7 +69,8 @@
   window.HongguoNativePlayer = {
     isAvailable: function () { return false; },
     engine: function () { return 'webos-html5'; },
-    diagnostics: function () { return JSON.stringify({ platform: 'webos', experimental: true, playback_verified: false }); }
+    diagnostics: function () { return JSON.stringify({ platform: 'webos', experimental: true, playback_verified: false,
+      webos_audio: window.HongguoWebOSAudio ? window.HongguoWebOSAudio.diagnostics() : null }); }
   };
   window.HongguoTVUpdates = {
     getStatus: function () { return JSON.stringify({ supported: false, state: 'unsupported', message: 'webOS 实验版暂未接入在线更新' }); },

@@ -58,6 +58,7 @@
     localeActions: '.locale-action',
     sidebarDisplay: '.sidebar-display-action',
     autoCinema: '.auto-cinema-action',
+    webosAudio: '.webos-audio-action',
     playbackModes: '.playback-mode-action',
     support: '.support-card, .support-close',
     rankModal: '.rank-filter-option, .rank-filter-close, .rank-filter-apply',
@@ -1110,6 +1111,7 @@
     if (element.classList.contains('locale-action')) return 'localeActions';
     if (element.classList.contains('sidebar-display-action')) return 'sidebarDisplay';
     if (element.classList.contains('auto-cinema-action')) return 'autoCinema';
+    if (element.classList.contains('webos-audio-action')) return 'webosAudio';
     if (element.classList.contains('playback-mode-action')) return 'playbackModes';
     if (element.classList.contains('account-action')) return 'accountActions';
     if (element.classList.contains('confirm-button')) return 'confirmation';
@@ -1632,7 +1634,7 @@
     }
     if (zone === 'appUpdates') {
       if (direction === 'left' || direction === 'right') return moveWithinZone(zone, current, direction) || (direction === 'left' ? activeSidebar() : null);
-      if (direction === 'up') return firstVisible('.auto-cinema-action') || firstVisible('.locale-action[aria-pressed="true"]') || firstVisible('.locale-action') || selectedSidebarDisplay() || activeSidebar();
+      if (direction === 'up') return firstVisible('.webos-audio-action') || firstVisible('.auto-cinema-action') || firstVisible('.locale-action[aria-pressed="true"]') || firstVisible('.locale-action') || selectedSidebarDisplay() || activeSidebar();
       if (direction === 'down') return firstVisible('.webos-update-notes') || firstVisible('.playback-mode-action[aria-pressed="true"]') || firstVisible('.playback-mode-action');
       return null;
     }
@@ -1644,7 +1646,13 @@
     if (zone === 'autoCinema') {
       if (direction === 'left' || direction === 'right') return moveWithinZone(zone, current, direction) || (direction === 'left' ? activeSidebar() : null);
       if (direction === 'up') return firstVisible('.locale-action[aria-pressed="true"]') || firstVisible('.locale-action') || selectedSidebarDisplay() || activeSidebar();
-      if (direction === 'down') return firstVisible('.app-update-action') || firstVisible('.playback-mode-action[aria-pressed="true"]') || firstVisible('.playback-mode-action');
+      if (direction === 'down') return firstVisible('.webos-audio-action') || firstVisible('.app-update-action') || firstVisible('.playback-mode-action[aria-pressed="true"]') || firstVisible('.playback-mode-action');
+      return null;
+    }
+    if (zone === 'webosAudio') {
+      if (direction === 'left') return activeSidebar();
+      if (direction === 'up') return firstVisible('.auto-cinema-action') || firstVisible('.locale-action[aria-pressed="true"]') || selectedSidebarDisplay() || activeSidebar();
+      if (direction === 'down') return firstVisible('.app-update-action');
       return null;
     }
     if (zone === 'playbackModes') {
@@ -2399,7 +2407,12 @@
     progress.querySelector('span').style.width = (duration ? position / duration * 100 : 0) + '%';
     var paused = video.paused || video.ended;
     setControlIcon('pause', paused ? uiText('ui.play', '播放') : uiText('ui.pause', '暂停'), paused ? 'icon-play' : 'icon-pause');
-    setControlIcon('speed', video.playbackRate + 'x', 'icon-speed');
+    var speedLabel = video.playbackRate + 'x';
+    if (webosShell && window.HongguoWebOSAudio && window.HongguoWebOSAudio.isEnabled()) {
+      var audioState = window.HongguoWebOSAudio.diagnostics();
+      speedLabel = audioState.actual_video_rate + 'x' + (audioState.phase === 'preparing' || audioState.phase === 'aligning' ? '…' : '');
+    }
+    setControlIcon('speed', speedLabel, 'icon-speed');
     var muted = (playbackAudioHold ? playbackAudioHold.muted : video.muted) || !video.volume;
     setControlIcon('volume', muted ? uiText('ui.mute', '静音') : uiText('ui.volume', '音量') + ' ' + Math.round(video.volume * 100) + '%', muted ? 'icon-volume-muted' : 'icon-volume');
     setControlIcon('quality', playbackQuality ? (playbackPreferences.quality ? '' : uiText('diagnostic.auto', '自动') + ' · ') + playbackQuality : uiText('ui.quality', '清晰度'), 'icon-quality');
@@ -2733,7 +2746,10 @@
       option.addEventListener('click', function () {
         if (kind === 'quality') { switchQuality(value); return; }
         try {
-          if (kind === 'speed') { video.playbackRate = value; video.defaultPlaybackRate = value; playbackPreferences.speed = value; }
+          if (kind === 'speed') {
+            if (!(webosShell && window.HongguoWebOSAudio && window.HongguoWebOSAudio.chooseSpeed(value))) { video.playbackRate = value; video.defaultPlaybackRate = value; }
+            playbackPreferences.speed = value;
+          }
           else { video.volume = value / 100; setPlaybackMuted(value === 0); playbackPreferences.volume = value; }
           updatePlaybackControls(); savePlaybackPreferences(); closePlayerOptions();
         } catch (error) { showNotice(kind === 'speed' ? uiText('ui.speedUnsupported', '设备不支持这个倍速') : uiText('ui.remoteVolume', '请用遥控器音量键调整音量')); }
@@ -7511,6 +7527,21 @@
     saveProgress(true); updatePlaybackControls();
     if (activePlayback && activePlayback.started && media.getAttribute('src') && media.paused && !media.ended) revealControls();
   });
+  media.addEventListener('webosaudiofallback', function () {
+    if (!window.HongguoWebOS) return;
+    updatePlaybackControls();
+    showNotice(uiText('ui.audibleSpeedFallback', '倍速声音准备失败，已恢复正常速度'));
+  });
+  media.addEventListener('webosaudiostate', function (event) {
+    if (!webosShell) return;
+    updatePlaybackControls();
+    if (event.detail && event.detail.phase === 'preparing') showNotice(uiText('ui.audibleSpeedPreparing', '正在准备倍速声音，暂按有声 1 倍速播放'));
+  });
+  media.addEventListener('webosaudioenabledchange', function (event) {
+    if (!webosShell) return;
+    if (event.detail && !event.detail.enabled) { playbackPreferences.speed = 1; savePlaybackPreferences(); }
+    updatePlaybackControls();
+  });
   media.addEventListener('ratechange', updatePlaybackControls);
   media.addEventListener('volumechange', updatePlaybackControls);
   media.addEventListener('nativefallbackstart', function () {
@@ -7834,6 +7865,22 @@
     cancelPendingAutoCinema();
     if (!autoCinemaPreferences.choose(autoCinemaPreferences.enabled() ? 'disabled' : 'enabled')) showNotice(uiText('settings.saveFailed', '设置未能保存，请重试。'));
   });
+  var webosAudio = webosShell && window.HongguoWebOSAudio;
+  if (webosAudio && webosAudio.supported) {
+    var webosAudioToggle = document.getElementById('webos-audio-toggle');
+    document.getElementById('webos-audio-settings').classList.remove('is-hidden');
+    function renderWebosAudioSetting() {
+      var enabled = webosAudio.isEnabled();
+      webosAudioToggle.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+      webosAudioToggle.classList.toggle('account-primary', enabled);
+      webosAudioToggle.textContent = uiText(enabled ? 'settings.autoCinemaEnabled' : 'settings.autoCinemaDisabled', enabled ? '已开启' : '已关闭');
+    }
+    webosAudioToggle.addEventListener('click', function () {
+      if (!webosAudio.choose(!webosAudio.isEnabled())) showNotice(uiText('settings.saveFailed', '设置未能保存，请重试。'));
+      renderWebosAudioSetting();
+    });
+    renderWebosAudioSetting();
+  }
   var licenses = document.getElementById('app-open-licenses');
   if (window.HongguoNativePlayer && window.HongguoNativePlayer.showLicenses) {
     licenses.classList.remove('is-hidden');

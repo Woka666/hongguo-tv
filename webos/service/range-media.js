@@ -637,6 +637,7 @@ module.exports = {
   parseByteRange: parseByteRange,
   parseContentRange: parseContentRange,
   strongETag: strongETag,
+  decryptFragment: decryptFragment,
   _indexMP4: indexMP4,
   _fetchMedia: fetchMedia
 };
