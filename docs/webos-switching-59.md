@@ -20,7 +20,7 @@ play/info 响应增加 preparation_timing 和 preparation_shared / preparation_c
 
 本机 player/diagnostics 提供 media_resolve_ms、media_range_init_ms、media_download_ms、media_decrypt_ms、media_preparation_stage；失败时保留 media_preparation_error_stage。最多保存 16 份小型准备报告，最近前台失败在没有媒体地址时仍可读取，后台预取不替换前台诊断。
 
-共享诊断界面在准备中和失败后也显示已完成阶段的计时，完整文件回退时保留 Range 尝试耗时。当前源模式以已附加源或已准备媒体为依据，避免把“请求使用 Range”显示成“已经成功使用 Range”。
+共享诊断界面在准备中和失败后也显示已完成阶段的计时，完整文件回退时保留 Range 尝试耗时。切集准备期间若 video 仍保留上一集 src，webOS 改为读取当前前台准备任务，源附加后再按精确媒体路径查询。当前源模式以已附加源或已准备媒体为依据，避免把“请求使用 Range”显示成“已经成功使用 Range”。
 
 ## 验证
 
@@ -28,6 +28,7 @@ play/info 响应增加 preparation_timing 和 preparation_shared / preparation_c
 - provider 回归：前后台共用取源和在途 Range 初始化、后台失败与前台整集回退的独立策略、取源失败不下载、过期索引刷新、缓存预算与各阶段计时。
 - adapter 回归：模拟不支持 keepalive 预检的浏览器，验证缓存会话与连续换源、服务重启、前后台和退出；验证本地绝对媒体地址的诊断还原。
 - 独立 range-media 测试覆盖实际 HTTP Range、按需解密、拖动、断流重试和 URL 刷新。
+- 2026-10-26 开发机以匿名推荐中的首集验证真实上游与本机 HTTP：取源 132ms、Range 初始化 386ms；并发准备复用同一任务，随后前台命中缓存。视频总长 8,881,446 bytes，初始化区 344,047 bytes；开头和中段分别请求 65,536 bytes，均返回准确的 206 / Content-Range，未回退到整集下载。该检查直接使用推荐中的 VID，未验证电视渲染或下一集详情的网络可用性；此前通过排行榜再取网页详情的探测在进入媒体准备前超时。
 
 这些验证不能替代 LG 真机上的延迟测量，也不承诺切集必定小于 1 秒。后续设备反馈应同时保留前台解析耗时、Range/完整文件模式、回退原因和实际起播耗时。
 

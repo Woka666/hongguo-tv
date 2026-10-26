@@ -2588,9 +2588,12 @@
         background: applicationInBackground || applicationHidden() }
     };
     renderPlaybackDiagnostics(snapshot);
-    // Read only local status for this exact source; never resolve or fetch media.
+    // Read local status only. webOS can still hold the previous src while the
+    // next episode is preparing; query the current foreground job in that case.
     var path = /^\/minireel-proxy\/media\/[a-f0-9]{24}\.mp4$/.test(source) ? source : '';
-    if (window.HongguoWebOS && typeof window.HongguoWebOS.mediaPath === 'function') path = window.HongguoWebOS.mediaPath(source);
+    if (window.HongguoWebOS && typeof window.HongguoWebOS.mediaPath === 'function') {
+      path = snapshot.flags.preparing && !snapshot.flags.playbackMode ? '' : window.HongguoWebOS.mediaPath(source);
+    }
     var request = new XMLHttpRequest(); diagnosticRequest = request;
     request.open('GET', '/api/v1/player/diagnostics?media=' + encodeURIComponent(path), true); request.timeout = 2500;
     function finish(core) {
