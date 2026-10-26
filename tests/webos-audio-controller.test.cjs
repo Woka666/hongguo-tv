@@ -123,3 +123,10 @@ test('selecting a speed while paused defers audio reads until actual playback',a
   const f=fixture();f.video.paused=true;f.controller.sourceChanged(source(1));f.controller.setRate(2);await f.flush();assert.equal(f.requests.length,0);assert.equal(f.workers.length,0);
   f.video.paused=false;f.controller.event('playing');await f.flush();await f.advance(180);assert.equal(f.requests.length,1);assert.equal(f.native.rate,2);f.controller.destroy();
 });
+test('speaker output latency is compensated at handoff rather than causing repeated false resynchronization',async()=>{
+  const f=fixture();f.context.outputLatency=.1;f.context.getOutputTimestamp=()=>({contextTime:Math.max(0,f.context.currentTime-.1)});
+  f.controller.sourceChanged(source(1));f.controller.setRate(2);await f.flush();
+  assert(Math.abs(f.workers[0].messages.find(m=>m.type==='reset').position-1.35)<1e-9);
+  await f.advance(2000);assert.equal(f.native.rate,2);assert.deepEqual(f.failures,[]);assert(Math.abs(f.controller.diagnostics().sync_error_ms)<1);
+  assert.equal(f.controller.diagnostics().output_latency_ms,100);assert.equal(f.workers[0].messages.filter(m=>m.type==='reset').length,1);f.controller.destroy();
+});

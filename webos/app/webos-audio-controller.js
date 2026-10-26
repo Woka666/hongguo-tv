@@ -46,11 +46,23 @@
       if (timer !== null) clear(timer);
       timer = timeout(pump, 60);
     }
+    function outputDelay() {
+      if (!context) return 0;
+      var delay = Number(context.outputLatency) || Number(context.baseLatency) || 0;
+      try {
+        var stamp = context.getOutputTimestamp && context.getOutputTimestamp();
+        var measured = stamp && stamp.contextTime > 0 ? context.currentTime - stamp.contextTime : -1;
+        if (measured >= 0 && measured <= 1) delay = measured;
+      } catch (ignored) {}
+      return isFinite(delay) && delay >= 0 && delay <= 1 ? delay : 0;
+    }
     function resetTimeline() {
       stopOutput();
       if (!armed || !worker || !playing() || !foreground || !context || context.state !== 'running') return;
       scheduledAt = context.currentTime + .15;
-      timeline = { when: scheduledAt, position: Number(video.currentTime) + .15 * options.readNativeRate(), rate: rate };
+      // Native video changes speed at handoff; the speaker hears this PCM
+      // one output-latency later. Predict both intervals, not just queue time.
+      timeline = { when: scheduledAt, position: Number(video.currentTime) + .15 * options.readNativeRate() + outputDelay() * rate, rate: rate };
       worker.postMessage({ type: 'reset', epoch: epoch, position: timeline.position, rate: rate });
     }
     function realign() {
@@ -63,8 +75,7 @@
       if (!timeline) resetTimeline();
       if (!timeline) return;
       var now = context.currentTime;
-      var stamp = context.getOutputTimestamp && context.getOutputTimestamp();
-      var audible = stamp && stamp.contextTime > 0 ? stamp.contextTime : Math.max(0, now - (Number(context.outputLatency) || Number(context.baseLatency) || 0));
+      var audible = Math.max(0, now - outputDelay());
       syncError = timeline.position + (audible - timeline.when) * timeline.rate - Number(video.currentTime);
       if (routeReady && audible >= timeline.when && Math.abs(syncError) > .12) realign();
       if (!timeline) return;
@@ -220,7 +231,7 @@
       sourceChanged: sourceChanged, foregroundChanged: foregroundChanged, event: event, destroy: destroy,
       diagnostics: function () { return { phase: phase, requested_rate: rate, actual_video_rate: options.readNativeRate(), audio_active: routeReady,
         worker_ready: workerReady, pcm_bytes: pcmBytes, sample_rate: pcmRate, duration: duration, scheduled_nodes: nodes.length,
-        sync_error_ms: Math.round(syncError * 1000), error_code: errorCode }; } };
+        sync_error_ms: Math.round(syncError * 1000), output_latency_ms: Math.round(outputDelay() * 1000), error_code: errorCode }; } };
   }
   root.HongguoWebOSAudioController = { create: create };
   if (typeof module === 'object' && module.exports) module.exports = root.HongguoWebOSAudioController;
