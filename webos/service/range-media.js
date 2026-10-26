@@ -5,6 +5,8 @@ var https = require('https');
 var url = require('url');
 var crypto = require('crypto');
 var fs = require('fs');
+var audioCancel = require('./audio-cancel');
+var headCache = require('./range-head-cache')(fetchMediaUncached);
 
 var PROBE_BYTES = 64 * 1024;
 var MAX_MOOV_BYTES = 16 * 1024 * 1024;
@@ -42,7 +44,7 @@ function parseContentRange(value) {
   return { start: start, end: end, total: total };
 }
 
-function requestRange(target, start, end, etag, redirects, timeout) {
+function requestRange(target, start, end, etag, redirects, timeout, signal) {
   redirects = redirects || 0;
   if (redirects > MAX_REDIRECTS) return Promise.reject(fail('媒体源重定向次数过多'));
   var parsed = url.parse(target);
@@ -57,8 +59,18 @@ function requestRange(target, start, end, etag, redirects, timeout) {
     Range: 'bytes=' + start + '-' + end
   };
   if (etag) headers['If-Range'] = etag;
-  return new Promise(function (resolve, reject) {
+  return new Promise(function (resolvePromise, rejectPromise) {
     var request;
+    var finished = false;
+    function finish(error, result) {
+      if (finished) return; finished = true;
+      if (signal) signal.removeEventListener('abort', aborted);
+      if (error) rejectPromise(error); else resolvePromise(result);
+    }
+    function resolve(value) { finish(null, value); }
+    function reject(error) { finish(error); }
+    function aborted() { var error = audioCancel.error(signal); reject(error); if (request) request.destroy(error); }
+    if (signal && signal.aborted) { aborted(); return; }
     var activeResponse = null;
     var responseChunks = [];
     var responseBytes = 0;
@@ -81,6 +93,7 @@ function requestRange(target, start, end, etag, redirects, timeout) {
         method: 'GET', headers: headers, timeout: Number(timeout) > 0 ? Number(timeout) : REQUEST_TIMEOUT
       });
     } catch (error) { reject(error); return; }
+    if (signal) signal.addEventListener('abort', aborted);
     request.on('timeout', function () { request.destroy(fail('媒体 Range 请求超时', 'RANGE_TIMEOUT')); });
     request.on('error', rejectRequest);
     request.on('response', function (response) {
@@ -94,7 +107,7 @@ function requestRange(target, start, end, etag, redirects, timeout) {
           reject(fail('媒体源重定向试图降级到 HTTP'));
           return;
         }
-        requestRange(redirected, start, end, etag, redirects + 1, timeout).then(resolve, reject);
+        requestRange(redirected, start, end, etag, redirects + 1, timeout, signal).then(resolve, reject);
         return;
       }
       response.on('data', function (chunk) {
@@ -454,6 +467,7 @@ function fetchExact(source, start, end, options) {
     throw fail('上游媒体 Range 响应长度不足', 'RANGE_INTERRUPTED');
   }
   function retryInterrupted(error, failures) {
+    if (error && error.name === 'AbortError') return Promise.reject(error);
     if (error && error.code === 'RANGE_RESPONSE_TOO_LARGE') return Promise.reject(error);
     var partial = error && error.rangeResponse;
     if (partial && partial.status === 206) {
@@ -467,8 +481,9 @@ function fetchExact(source, start, end, options) {
     return waitRetry(failures + 1).then(function () { return requestFrom(failures + 1); });
   }
   function requestFrom(failures) {
+    if (options.signal && options.signal.aborted) return Promise.reject(audioCancel.error(options.signal));
     var target = source.url;
-    return requestRange(target, cursor, end, source.etag, 0, timeout).then(function (response) {
+    return requestRange(target, cursor, end, source.etag, 0, timeout, options.signal).then(function (response) {
       if ([401, 403, 404, 410].indexOf(response.status) >= 0 && !refreshed && typeof source.refresh === 'function') {
         refreshed = true;
         return refreshSource(source, target).then(function () { return requestFrom(0); });
@@ -482,7 +497,7 @@ function fetchExact(source, start, end, options) {
   return requestFrom(0);
 }
 
-function fetchMedia(source, start, end) {
+function fetchMediaUncached(source, start, end, options) {
   source.lastUsedAt = Date.now();
   var result = Buffer.alloc(end - start + 1);
   var cursor = Math.max(start, source.prefix.length);
@@ -494,6 +509,8 @@ function fetchMedia(source, start, end) {
   }
   var startup = source.firstMediaRead !== false && tasks.length > 0;
   var requestOptions = startup ? { timeout: STARTUP_REQUEST_TIMEOUT, maxFailures: STARTUP_RETRIES } : null;
+  if (options) requestOptions = Object.assign({}, requestOptions || {}, { signal: options.signal },
+    options.speculative ? { timeout: STARTUP_REQUEST_TIMEOUT, maxFailures: 0 } : {});
   var chain = Promise.resolve();
   tasks.forEach(function (task) {
     chain = chain.then(function () {
@@ -528,6 +545,18 @@ function fetchMedia(source, start, end) {
     if (startup) source.firstMediaRead = false;
     return result;
   });
+}
+
+function fetchMedia(source, start, end) { return headCache.read(source, start, end); }
+
+function prefetchHead(source, signal) {
+  var cancel = audioCancel.create();
+  function aborted() { cancel.abort(); }
+  if (signal) { signal.addEventListener('abort', aborted); if (signal.aborted) aborted(); }
+  // A speculative read has one total budget, including all four blocks.
+  var timer = setTimeout(aborted, 5000);
+  function finish() { clearTimeout(timer); if (signal) signal.removeEventListener('abort', aborted); }
+  return headCache.warm(source, cancel.signal).then(function (bytes) { finish(); return bytes; }, function (error) { finish(); throw error; });
 }
 
 function serve(req, res, source, onStatus) {
@@ -653,5 +682,8 @@ module.exports = {
   strongETag: strongETag,
   decryptFragment: decryptFragment,
   _indexMP4: indexMP4,
-  _fetchMedia: fetchMedia
+  _fetchMedia: fetchMedia,
+  prefetchHead: prefetchHead,
+  headDiagnostics: headCache.diagnostics,
+  clearHeadCache: headCache.clear
 };

@@ -75,6 +75,7 @@ function fixture({ failSave = false, writeGate = null, sourceGate = null } = {})
     function waitForPlaybackPaint(){return Promise.resolve(true)}function bindPlaybackPresentation(){}function clearRangeTransitionHint(){}function waitForPlaybackPrefetch(handoff){return handoff ? handoff.promise : Promise.resolve(null)}
     function setPlayerStatus(){}function showRecommendationPlaceholder(){}function episodeLoadingText(){return 'loading'}function revealControls(){}function showNotice(x){calls.push({kind:'notice',text:x})}
     function playMedia(v){v.paused=false;calls.push({kind:'play',src:v.src});return Promise.resolve()}
+    function stageNativePlaybackStartPosition(){}
     function accountKeypadOpen(){return false}function hideWorkspacePages(){}function goFocus(x){document.activeElement=x}function firstContentFocus(){return pageMode()==='recommend'?activeChannel():document.getElementById('hero-feed-focus')}
     function cancelPendingAutoCinema(){autoCinemaCandidate=false;autoCinemaSession=null;autoCinemaGeneration=0}
     function resetPlayerUI(){cancelPlaybackPreparation()}function renderAccount(){}function pollAccount(){}function queueTailCheck(){}
@@ -82,7 +83,7 @@ function fixture({ failSave = false, writeGate = null, sourceGate = null } = {})
     feedPager.local(feedItems,feedItems.length);feedPager.params={channel:'16'};var allPagers=[feedPager,searchPager];
   ` + slice('resumeEpisode', 'clockText') + slice('changeLibrary', 'toggleSaved') +
     slice('recommendationChannel', 'showRecommendationPlaceholder') + slice('saveProgress', 'continueAfterEpisode') +
-    slice('playFeedItem', 'posterSeasonLabel') + slice('loadCatalog', 'seriesMessage') +
+    slice('recoverPlaybackPreparation', 'clearRangeTransitionHint') + slice('playFeedItem', 'posterSeasonLabel') + slice('loadCatalog', 'seriesMessage') +
     source.slice(source.indexOf('  function activatePage('), source.indexOf("  document.addEventListener('keydown', handleKey")), c);
   return { c, calls, video, channel, state, async flush() { for (let i = 0; i < 6; i++) await tick(); }, entry(episode, position, extra = {}) {
     c.libraryData.entries = [{ drama: c.feedItems.find(x => x.series_id === 'r1') || { series_id: 'r1', episode_count: 3 }, episode, position, duration: 90, video_id: 'r1-' + episode, completed: false, last_played_at: Date.now(), ...extra }];

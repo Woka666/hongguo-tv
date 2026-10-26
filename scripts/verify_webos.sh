@@ -76,7 +76,7 @@ NODE
 "$node_bin" "$repo_dir/webos/service/range-media.test.js"
 "$node_bin" "$repo_dir/webos/service/account.test.js"
 "$node_bin" "$repo_dir/webos/service/service-entry.test.js"
-"$node_bin" --test "$repo_dir/tests/webos-media-prefetch.test.cjs"
+"$node_bin" --test "$repo_dir/tests/webos-single-player-prefetch.test.cjs" "$repo_dir/tests/webos-range-head-cache.test.cjs" "$repo_dir/tests/next-episode-transition.test.cjs"
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/hongguo-webos-verify.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT INT TERM

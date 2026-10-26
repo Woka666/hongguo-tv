@@ -406,13 +406,7 @@
       });
     },
     prepare: function (target, signal) {
-      return fetchData('/api/v1/play/info?' + new URLSearchParams(Object.assign({}, target, { prefetch: '1' })), signal ? { signal: signal } : {}).then(function (data) {
-        if (!webosShell || !data || !data.path || !window.HongguoWebOSMediaPrefetch) return data;
-        return window.HongguoWebOSMediaPrefetch.prepare(data.path, signal).then(function (entry) {
-          if (entry) data.webos_media_prefetch = true;
-          return data;
-        });
-      });
+      return fetchData('/api/v1/play/info?' + new URLSearchParams(Object.assign({}, target, { prefetch: '1' })), signal ? { signal: signal } : {});
     }
   });
   var applicationInBackground = false;
@@ -467,7 +461,12 @@
   function fetchData(url, options) {
     return fetch(url, options).then(function (response) {
       return response.json().then(function (payload) {
-        if (!response.ok || !payload.ok) throw new Error(apiError(payload, response.status, 'common.networkFailed', '连接失败') + (payload && (payload.error || payload.message) ? '' : '（' + response.status + '）'));
+        if (!response.ok || !payload.ok) {
+          var error = new Error(apiError(payload, response.status, 'common.networkFailed', '连接失败') + (payload && (payload.error || payload.message) ? '' : '（' + response.status + '）'));
+          error.code = payload.error || '';
+          error.status = response.status;
+          throw error;
+        }
         var data = payload.data || payload;
         if (data.path && window.HongguoDesktopUI) data.path = window.HongguoDesktopUI.mediaSource(data.path, window.HongguoDesktop);
         return data;
@@ -4262,6 +4261,22 @@
     playFeedItem(feedIndex, playback.episode, position, null, null, { recoveryAttempts: playback.recoveryAttempts });
     return true;
   }
+  function recoverPlaybackPreparation(playback, error, generation) {
+    if (typeof webosShell === 'undefined' || !webosShell || !playback || activePlayback !== playback ||
+        playback.generation !== generation || generation !== feedGeneration ||
+        applicationInBackground || applicationHidden() || !isPlaybackPage() || !error || error.name === 'AbortError') return false;
+    var code = error.code || '';
+    var temporary = [408, 425, 429, 500, 502, 503, 504].indexOf(Number(error.status)) >= 0;
+    if (code === 'VIDEO_MODEL_HTTP' ? !temporary :
+        ['VIDEO_MODEL_EMPTY', 'UPSTREAM_TIMEOUT', 'ETIMEDOUT', 'ESOCKETTIMEDOUT', 'ECONNRESET',
+          'ECONNREFUSED', 'EPIPE', 'EAI_AGAIN', 'ENETUNREACH', 'EHOSTUNREACH', 'ENETDOWN'].indexOf(code) < 0) return false;
+    if (playbackRecovery.next({ native: playbackEngineName() }) !== 'refresh') return false;
+    // The visible video may still be the previous episode at its end. Retry
+    // the pending episode's saved position, never that old video's timestamp.
+    var position = Math.max(0, Number(playback.position) || 0);
+    playFeedItem(feedIndex, playback.episode, position, null, null, { recoveryAttempts: playbackRecovery.attempts(), automaticNext: !!(playback.timing && playback.timing.automatic_next) });
+    return true;
+  }
   function clearRangeTransitionHint() {
     clearTimeout(rangeTransitionTimer);
     rangeTransitionTimer = null;
@@ -4297,7 +4312,7 @@
     episodePrefetch.maybe({ item: playback.item, series_id: playback.item.series_id, vid: playback.vid,
       episode: playback.episode, quality: playbackPreferences.quality, generation: playback.generation, owner: accountEpoch,
       mode: (typeof rangePlaybackEnabled === 'function' && rangePlaybackEnabled()) ? 'range' : '',
-      prefetch_after_seconds: playbackEngineName() === 'mpv' ? 1 : webosShell ? 1.5 : 5,
+      prefetch_after_seconds: playbackEngineName() === 'mpv' ? 1 : 5,
       duration: Number(video.duration), position: Number(video.currentTime), paused: video.paused, ended: video.ended,
       stable_seconds: playback.stableSince ? Math.max(0, Date.now() - playback.stableSince) / 1000 : 0,
       started: playback.started, active: playback.generation === feedGeneration && isPlaybackPage() && !applicationInBackground && !applicationHidden() && !qualityPrevious });
@@ -4779,7 +4794,7 @@
           endedPending: false,
           mode: '', rangeFallback: '', rangeFallbackAttempted: false,
           recoveryAttempts: recovery && recovery.recoveryAttempts || 0,
-          timing: { episode: episode, automatic_next: fastContinuation, started_at: switchStartedAt, ready_at: 0,
+          timing: { episode: episode, automatic_next: fastContinuation || !!(recovery && recovery.automaticNext), started_at: switchStartedAt, ready_at: 0,
             prefetch_started_at: 0, prefetch_ready_at: 0, prefetch_ms: null, handoff_wait_ms: null,
             foreground_resolve_started_at: 0, foreground_resolve_ms: null,
             prepared_before_switch: false, reported: false } };
@@ -4827,24 +4842,11 @@
         if (!data.path) throw new Error(uiText('content.noSource', '播放服务没有返回地址'));
         function attachPreparedSource() {
           if (generation !== feedGeneration || request.signal.aborted || !activePlayback) return;
-          var adoptedPrefetch = false;
-          if (webosShell && data.webos_media_prefetch && window.HongguoWebOSMediaPrefetch) {
-            var adopted = window.HongguoWebOSMediaPrefetch.adopt(data.path, video);
-            if (adopted && adopted !== video) {
-              video = adopted;
-              media = adopted;
-              if (playbackAudioHold) adopted.muted = true;
-              adopted.volume = Math.max(0, Math.min(1, playbackPreferences.volume / 100));
-              adopted.playbackRate = playbackPreferences.speed;
-              adopted.defaultPlaybackRate = playbackPreferences.speed;
-              adoptedPrefetch = adopted.__hongguoWebOSPrefetched === true;
-            }
-          }
           activePlayback.timing.ready_at = Date.now();
           activePlayback.mode = data.mode || 'full';
           activePlayback.rangeFallback = data.range_fallback || '';
           bindPlaybackPresentation(activePlayback, data.path);
-          if (!adoptedPrefetch) video.src = data.path;
+          video.src = data.path;
           stageNativePlaybackStartPosition(activePlayback.position);
           playbackQuality = data.quality || '';
           playbackQualities = data.qualities || [];
@@ -4853,7 +4855,7 @@
           video.classList.add('has-source');
           if (typeof syncNativePlaybackPageState === 'function') syncNativePlaybackPageState();
           placeholder.classList.add('is-hidden');
-          if (!adoptedPrefetch) video.load();
+          video.load();
           setPlayerStatus(episodeLoadingText(activePlayback.episode));
           if (!applicationHidden() && !applicationInBackground) playMedia(video).catch(function () { setPlayerStatus(''); revealControls(); showNotice(uiText('content.videoReadyConfirm', '视频已准备好，请按确认键开始播放')); });
           else { setPlayerStatus(''); revealControls(); }
@@ -4870,6 +4872,7 @@
       .catch(function (error) {
         if (generation !== feedGeneration || (pageMode() !== 'recommend' && pageMode() !== 'player')) return;
         playbackInfoRequest = null; playbackPrefetchHandoff = null;
+        if (recoverPlaybackPreparation(activePlayback, error, generation)) return;
         if (error.name !== 'AbortError') {
           clearRangeTransitionHint();
           hero.classList.remove('is-range-transition');

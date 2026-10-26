@@ -137,6 +137,13 @@ async function testRangeCENCThroughRedirect() {
       assert.strictEqual(invalid.status, 416);
       assert.strictEqual(invalid.headers['content-range'], 'bytes */' + fixture.bytes.length);
       assert.strictEqual(lastStatus, 416, 'diagnostics receive the actual invalid-range status');
+      await rangeMedia.prefetchHead(source);
+      var readsAfterWarm = seenRanges.length;
+      var cached = await get(localPort, '/media', { Range: 'bytes=' + start + '-' + end });
+      assert.deepStrictEqual(cached.body, fixture.plain.slice(7, 37), 'cached CENC samples are not decrypted twice');
+      assert.strictEqual(seenRanges.length, readsAfterWarm, 'the proxy actually consumes warmed data');
+      assert(rangeMedia.headDiagnostics(source).media_head_cache_hits > 0);
+      rangeMedia.clearHeadCache();
     } finally { await close(local); }
   } finally {
     await close(redirectServer);

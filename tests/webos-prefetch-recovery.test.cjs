@@ -31,12 +31,12 @@ async function until(predicate) {
   for (let i = 0; i < 600; i++) { if (predicate()) return; await pause(5); }
   throw Error('Expected preparation event did not occur');
 }
-function fixture(replies) {
+function fixture(replies, warmHead) {
   const cache = fs.mkdtempSync(path.join(os.tmpdir(), 'hongguo-prefetch-recovery-'));
   const before = process.env.HONGGUO_WEBOS_CACHE_DIR;
   process.env.HONGGUO_WEBOS_CACHE_DIR = cache;
   const requests = [];
-  let rangeOpens = 0, downloads = 0;
+  let rangeOpens = 0, downloads = 0, headWarms = 0;
   const transport = { request(options) {
     assert(options.path.startsWith('/novel/player/video_model/v1/'));
     const req = new EventEmitter(), index = requests.length, reply = replies[index] || {};
@@ -60,6 +60,8 @@ function fixture(replies) {
   const normal = mod.require.bind(mod);
   mod.require = id => id === 'https' ? transport : id === './range-media' ? {
     open() { rangeOpens++; return Promise.resolve({ prefix: Buffer.alloc(16), samples: [], key: Buffer.alloc(16), length: 128, etag: '"fixture"' }); },
+    prefetchHead(source, signal) { headWarms++; return warmHead ? warmHead(source, signal) : Promise.resolve(0); },
+    headDiagnostics() { return { media_head_cache_bytes: 128, media_head_cache_hits: 0 }; },
     downloadFile() { downloads++; throw Error('Recovery must not download a complete video'); }
   } : normal(id);
   mod._compile(fs.readFileSync(providerFile, 'utf8'), providerFile);
@@ -68,10 +70,34 @@ function fixture(replies) {
     consumers.push({ prefetch: args[5], signal: args[6] }); return prepare.apply(provider, args);
   };
   return { provider, requests, consumers, get rangeOpens() { return rangeOpens; }, get downloads() { return downloads; },
+    get headWarms() { return headWarms; },
     prepare(prefetch, signal) { return provider.prepare('123', '456', '', true, 'range', prefetch, signal); },
     close() { provider.closeCache(); if (before === undefined) delete process.env.HONGGUO_WEBOS_CACHE_DIR; else process.env.HONGGUO_WEBOS_CACHE_DIR = before; fs.rmSync(cache, { recursive: true }); }
   };
 }
+
+test('source preparation is available to foreground while network-only head warming is still pending', async () => {
+  let finish;
+  const f = fixture([{}], () => new Promise(resolve => { finish = resolve; }));
+  try {
+    const speculative = f.prepare(true); await until(() => f.headWarms === 1);
+    const current = await f.prepare(false);
+    assert.equal(current.mode, 'range'); assert.equal(current.preparation_cached, true);
+    assert.equal(f.requests.length, 1); assert.equal(f.rangeOpens, 1);
+    finish(128); assert.equal((await speculative).path, current.path);
+    assert.equal(f.downloads, 0);
+  } finally { f.close(); }
+});
+
+test('failed speculative head data keeps valid play info and never starts a full-file fallback', async () => {
+  const f = fixture([{}], () => Promise.reject(new Error('head unavailable')));
+  try {
+    const speculative = await f.prepare(true), foreground = await f.prepare(false);
+    assert.equal(speculative.preparation_timing.media_head_prefetch_failed, true);
+    assert.equal(speculative.path, foreground.path);
+    assert.equal(f.requests.length, 1); assert.equal(f.downloads, 0);
+  } finally { f.close(); }
+});
 
 test('a foreground handoff recovers a failed speculative source once, without full download', async () => {
   const f = fixture([{ status: 502, hold: true }, {}]);

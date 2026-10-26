@@ -18,6 +18,8 @@
 
 协议、解密和媒体文件已在 macOS 网络环境中用真实上游数据验证。优先使用 Range/CENC 按需读取；缺少强 ETag 等条件时仍安全回退到完整下载后解密，不会将失败的预取变为整集后台下载。磁盘缓存具有 512 MiB 总预算、2 小时闲置清理和播放占用保护，详见 [缓存策略](../docs/webos-media-cache.md)。
 
+当前源码针对 #70 改回唯一 HTML5 主视频元素，下一集预取只在 Service 内准备片源和最多 2 MiB 开头数据，不再创建隐藏视频或替换主视频 DOM。额外内存缓存最多保留两个源共 4 MiB，播放时复用同一份分块，详见[下一集准备机制](../docs/episode-prefetch.md)。这些修复尚未发版，0.2.123 的 LG C5 回归反馈见 [Issue #70](https://github.com/aston314/hongguo-tv-releases/issues/70)。
+
 2026-10-25，用户在 [Issue #57](https://github.com/aston314/hongguo-tv-releases/issues/57) 回报 LG OLED65C5PTA（台湾版，固件 43.21.77、webOS SDK 11.2.0）安装 `hongguo-webos-0.2.117-test.25.ipk` 后，安装、启动、1080P 视频画面、声音、账号登录及原生遥控器滚轮均正常。安装方式为 Developer Mode + webOS Dev Manager 1.99.20，网络为台湾 Wi-Fi。
 
 另已在重新安装的 LG Simulator 中通过 HTTP 直连播放真实红果第 1、2 集、方向键切集及 seek，加载层退出、静音解除。缓存还有真实视频暂停期间容量清理和恢复播放验证；记录见 [Issue #55 修复与验证](../docs/webos-issue55-playback.md)。

@@ -7,7 +7,7 @@ const source = fs.readFileSync(require.resolve('../core/cmd/hongguotv/ui/app.js'
 const slice = (a,b) => source.slice(source.indexOf('  function '+a+'('), source.indexOf('  function '+b+'('));
 const tick = () => new Promise(r=>setImmediate(r));
 function deferred(){let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve}}
-function fixture({failWrite=false,ready=true,engine='standard',sourceGate=null,detailGate=null,captureFailure=false,native=false,prefetchReady=false}={}) {
+function fixture({failWrite=false,ready=true,engine='standard',sourceGate=null,detailGate=null,captureFailure=false,native=false,prefetchReady=false,webos=false,sourceReplies=null}={}) {
   const gate=deferred(), calls=[], resolverURLs=[], writes=[], notices=[], frames=new Map(), handlers={}, timers=[];let frameID=0;
   function classes(...initial){const names=new Set(initial);return {add(...x){x.forEach(n=>names.add(n))},remove(...x){x.forEach(n=>names.delete(n))},contains(n){return names.has(n)},toggle(n,on){if(on)names.add(n);else names.delete(n)},names}}
   const hero={classList:classes('is-feed'),style:{}};
@@ -21,16 +21,17 @@ function fixture({failWrite=false,ready=true,engine='standard',sourceGate=null,d
   const c=vm.createContext({Promise,AbortController,URLSearchParams,Date,Object,Number,Math,clearTimeout,console,
     setTimeout(fn,delay){timers.push({fn,delay});return timers.length},
     requestAnimationFrame(fn){frames.set(++frameID,fn);return frameID},cancelAnimationFrame(id){frames.delete(id)},
-    engine,video,calls,resolverURLs,writes,notices,gate,detailGate,document,uiText,
+    engine,video,calls,resolverURLs,writes,notices,gate,detailGate,document,uiText,webosShell:webos,
     apiError(payload,status,key,fallback){return payload&&(payload.error||payload.message)||fallback||('HTTP '+status)},
     fetch:async(url,options)=>{
       assert.equal(url,'/api/v1/library');const change=JSON.parse(options.body);calls.push('history:'+change.episode);writes.push(change);
       if(change.episode===1)await gate.promise;
       return {ok:!(failWrite&&change.episode===1),json:async()=>({ok:!(failWrite&&change.episode===1),error:'fixture disk failure',data:{owner_id:'123',entries:[{drama:change.drama,episode:change.episode}]}})};
     },
-    fetchData:async url=>{calls.push('source');resolverURLs.push(url);assert.match(url,/\/api\/v1\/play\/info\?/);if(sourceGate)await sourceGate.promise;return {path:'/media/next.mp4',quality:'720P',qualities:['720P']};}
+    fetchData:async url=>{calls.push('source');resolverURLs.push(url);assert.match(url,/\/api\/v1\/play\/info\?/);if(sourceGate)await sourceGate.promise;if(sourceReplies&&sourceReplies.length){const reply=sourceReplies.shift();if(reply instanceof Error)throw reply;}return {path:'/media/next.mp4',quality:'720P',qualities:['720P']};}
   });
   vm.runInContext("var desktopShell=false;" + source.match(/  function applicationHidden[^\n]+/)[0], c);
+  vm.runInContext(slice('recoverPlaybackPreparation','clearRangeTransitionHint'), c);
   vm.runInContext(`
     var accountEpoch=2,feedGeneration=1,continuationGeneration=0,seasonSwitchRequest=null;
     function playbackEngineName(){return engine==='mpv'?'mpv':engine==='range'?'webview':'webview_media3'}
@@ -147,6 +148,49 @@ test('a completed prefetch is adopted without a second foreground resolver reque
   f.paint();f.paint();await tick();await tick();
   assert.equal(f.video.src,'/media/prefetched.mp4');
   assert.ok(!f.calls.includes('source'));
+});
+test('webOS automatic continuation recovers a temporary source failure without a retry click', async () => {
+  const error = Object.assign(new Error('temporary source failure'), { code: 'VIDEO_MODEL_EMPTY', status: 502 });
+  const f = fixture({ webos: true, engine: 'range', sourceReplies: [error, null] });
+  f.c.playbackRecovery = require('../core/cmd/hongguotv/ui/playback-recovery').create({ maxAttempts: 1 });
+  f.gate.resolve(); f.handlers.ended();
+  await settlePlayback(f, 30);
+  assert.equal(f.c.activePlayback.episode, 2);
+  assert.equal(f.c.activePlayback.position, 0, 'old video ended at 120 seconds; new episode must start at zero');
+  assert.equal(f.c.activePlayback.timing.automatic_next, true, 'recovery retains the automatic continuation diagnostic');
+  assert.equal(f.video.src, '/media/next.mp4');
+  assert.equal(f.resolverURLs.length, 2);
+  assert(!f.calls.includes('status:暂时无法播放这集'), 'temporary failure stays in loading until recovery settles');
+});
+test('webOS consecutive source failures stop after one page refresh and show the retry action', async () => {
+  const error = Object.assign(new Error('temporary source failure'), { code: 'VIDEO_MODEL_EMPTY', status: 502 });
+  const f = fixture({ webos: true, engine: 'range', sourceReplies: [error, error, error] });
+  f.c.playbackRecovery = require('../core/cmd/hongguotv/ui/playback-recovery').create({ maxAttempts: 1 });
+  f.gate.resolve(); f.handlers.ended(); await settlePlayback(f, 30);
+  assert.equal(f.resolverURLs.length, 2);
+  assert(f.calls.includes('status:暂时无法播放这集'));
+});
+test('webOS automatic handoffs consume the real coordinator on every episode using the same video', async () => {
+  const f = fixture({ webos: true, engine: 'range' });
+  f.c.window = { HongguoWebOS: {} };
+  f.c.HongguoEpisodePrefetch = require('../core/cmd/hongguotv/ui/episode-prefetch');
+  vm.runInContext(source.slice(source.indexOf('  var episodePrefetch ='), source.indexOf('  var applicationInBackground =')), f.c);
+  vm.runInContext(slice('maybePrefetchNextEpisode', 'holdPlaybackAudio'), f.c);
+  f.c.feedItems[0].vid_list.push('444', '555'); f.c.feedItems[0].episode_count = 5;
+  f.gate.resolve();
+  for (let episode = 1; episode < 5; episode++) {
+    f.video.paused = false; f.video.ended = false; f.video.currentTime = 6;
+    f.c.activePlayback.started = true; f.c.activePlayback.stableSince = Date.now() - 6000;
+    f.handlers.timeupdate(); await tick();
+    const before = f.resolverURLs.length;
+    f.video.currentTime = 120; f.video.ended = true;
+    f.handlers.ended(); await settlePlayback(f, 20);
+    assert.equal(f.c.activePlayback.episode, episode + 1);
+    assert.equal(f.resolverURLs.length, before, 'automatic switch must use prepared info without resolving again');
+    assert.equal(f.document.getElementById('hero-video'), f.video, 'the original player and its listeners stay attached');
+    assert.equal(f.c.media, f.video);
+  }
+  assert.equal(f.resolverURLs.length, 4);
 });
 test('MPV retries a failed speculative Range preparation through the foreground Range/full-file fallback contract',async()=>{
   const f=fixture({engine:'mpv'});f.gate.resolve();f.c.playFeedItem(0,2,0);

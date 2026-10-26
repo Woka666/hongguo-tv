@@ -568,7 +568,19 @@
       // In-flight reports were selected when the request began. A late result
       // from an older drama must not replace a newer foreground diagnostic.
       if (!prefetch && cached) lastForegroundPreparation = report;
-      return Object.assign({}, result, { preparation_timing: Object.assign({}, report), preparation_shared: !!shared, preparation_cached: !!cached });
+      var value = Object.assign({}, result, { preparation_timing: Object.assign({}, report), preparation_shared: !!shared, preparation_cached: !!cached });
+      var source = wantsRange && rangeSources[token];
+      if (!prefetch || !source || typeof rangeMedia.prefetchHead !== 'function') return value;
+      return rangeMedia.prefetchHead(source, signal).then(function () {
+        Object.assign(value.preparation_timing, rangeMedia.headDiagnostics(source));
+        return value;
+      }, function (error) {
+        if (signal && signal.aborted) throw preparationCancelled();
+        // Source metadata remains usable when speculative bytes fail. Only
+        // foreground playback decides whether a complete-file fallback is needed.
+        value.preparation_timing.media_head_prefetch_failed = true;
+        return value;
+      });
     }
     function useJob(record, shared) {
       if (!prefetch) { record.foreground = true; record.foregroundUsers++; lastForegroundPreparation = record.report; }
@@ -1410,6 +1422,7 @@
     if (status) { result.media_http_status = status.status; result.media_age_seconds = Math.max(0, Math.floor((Date.now() - status.at) / 1000)); result.media_mode = status.mode || 'full'; }
     var rangeSource = rangeSources[token];
     if (rangeSource) {
+      if (typeof rangeMedia.headDiagnostics === 'function') Object.assign(result, rangeMedia.headDiagnostics(rangeSource));
       result.media_mode = 'range';
       result.media_prepared = true;
       result.media_bytes = 0;
@@ -1555,6 +1568,7 @@
       Object.keys(jobs).forEach(function (key) { if (jobs[key].recoveryCancel) jobs[key].recoveryCancel.abort('PLAYBACK_PREPARATION_CANCELLED'); });
       Object.keys(audioJobs).forEach(function (key) { audioJobs[key].cancel.abort(); });
       audioRange.close(); audioCache = [];
+      if (typeof rangeMedia.clearHeadCache === 'function') rangeMedia.clearHeadCache();
       if (mediaCache) mediaCache.close();
     },
     cacheSession: function (body) { ensureCacheRoot(); return mediaCache.updateSession(body); },
