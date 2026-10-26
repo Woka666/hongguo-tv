@@ -251,6 +251,30 @@ async function testPersistentMediaResponses() {
   }
 }
 
+async function testStartupRangeBudget() {
+  var attempts = 0;
+  var upstream = http.createServer(function (request, response) {
+    attempts++;
+    if (attempts <= 2) { response.statusCode = 503; response.end(); return; }
+    response.statusCode = 206;
+    response.setHeader('ETag', ETAG);
+    response.setHeader('Content-Range', 'bytes 0-2/3');
+    response.end(Buffer.from('abc'));
+  });
+  var port = await listen(upstream);
+  var source = { url: 'http://127.0.0.1:' + port + '/media', etag: ETAG, length: 3,
+    prefix: Buffer.alloc(0), samples: [], key: Buffer.alloc(16), firstMediaRead: true };
+  try {
+    await assert.rejects(rangeMedia._fetchMedia(source, 0, 2), /上游媒体 Range HTTP 503/);
+    assert.strictEqual(attempts, 2, 'startup reads stop after one retry');
+    attempts = 0;
+    source.firstMediaRead = false;
+    var result = await rangeMedia._fetchMedia(source, 0, 2);
+    assert.deepStrictEqual(result, Buffer.from('abc'), 'normal reads retain the full retry budget');
+    assert.strictEqual(attempts, 3, 'normal reads allow two retries');
+  } finally { await close(upstream); }
+}
+
 async function run() {
   assert.deepStrictEqual(rangeMedia.parseByteRange('bytes=-3', 10), { start: 7, end: 9, partial: true });
   assert.strictEqual(rangeMedia.parseByteRange('bytes=1-2,5-6', 10), null);
@@ -259,6 +283,7 @@ async function run() {
   await testRangeCENCThroughRedirect();
   await testFullDownloadRedirectFallbackHelper();
   await testPersistentMediaResponses();
+  await testStartupRangeBudget();
   console.log('webOS Range/CENC decrypt, redirects, full-download fallback and persistent media responses: PASS');
 }
 

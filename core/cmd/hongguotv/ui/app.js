@@ -388,6 +388,10 @@
   var playbackAudioHold = null;
   var playbackTiming = [];
   var playbackRecovery = HongguoPlaybackRecovery.create({ maxAttempts: 1 });
+  // webOS can leave the first local Range response waiting on an upstream
+  // request for several seconds. Keep that delay bounded for the TV player;
+  // desktop and MPV retain their existing recovery windows.
+  var webOSRangeStallFallbackMs = 8000;
   // Bounded, memory-only diagnostics. No drama IDs, titles or account data.
   window.HongguoTVPlaybackTiming = { snapshot: function () { return playbackTiming.map(function (item) { return Object.assign({}, item); }); } };
   var episodePrefetch = HongguoEpisodePrefetch.create({
@@ -2412,6 +2416,17 @@
       var audioState = window.HongguoWebOSAudio.diagnostics();
       speedLabel = audioState.actual_video_rate + 'x' + (audioState.phase === 'preparing' || audioState.phase === 'aligning' ? '…' : '');
     }
+    var speedButton = document.querySelector('[data-action="speed"]');
+    if (speedButton) {
+      speedButton.classList.toggle('is-hidden', webosShell);
+      if (webosShell) {
+        speedButton.tabIndex = -1;
+        speedButton.setAttribute('aria-hidden', 'true');
+      } else {
+        speedButton.removeAttribute('aria-hidden');
+        speedButton.removeAttribute('tabindex');
+      }
+    }
     setControlIcon('speed', speedLabel, 'icon-speed');
     var muted = (playbackAudioHold ? playbackAudioHold.muted : video.muted) || !video.volume;
     setControlIcon('volume', muted ? uiText('ui.mute', '静音') : uiText('ui.volume', '音量') + ' ' + Math.round(video.volume * 100) + '%', muted ? 'icon-volume-muted' : 'icon-volume');
@@ -2435,6 +2450,14 @@
       if (/^[1-9][0-9]{2,3}P$/.test(saved.quality || '')) playbackPreferences.quality = saved.quality;
       danmakuEnabled = saved.danmaku === true; playbackPreferences.danmaku = danmakuEnabled;
     } catch (error) { /* Invalid preferences fall back to normal playback. */ }
+    if (webosShell) {
+      // The webOS audible-speed experiment is paused while its startup and
+      // transition behavior is being repaired. Normalize both old local state
+      // and the current player to ordinary 1x playback.
+      playbackPreferences.speed = 1;
+      var webosAudio = window.HongguoWebOSAudio;
+      if (webosAudio && typeof webosAudio.choose === 'function') webosAudio.choose(false);
+    }
     var video = document.getElementById('hero-video');
     document.querySelector('[data-action="volume"]').classList.toggle('is-hidden', androidShell);
     if (androidShell) {
@@ -2702,6 +2725,7 @@
   }
   function openPlayerOptions(kind, entry) {
     if (!isPlaybackPage()) return;
+    if (kind === 'speed' && webosShell) return;
     if (kind === 'quality' && (!activePlayback || !document.getElementById('hero-video').getAttribute('src'))) { showNotice(uiText('ui.selectQualityHint', '视频准备好后可选择清晰度')); return; }
     if (kind === 'send-danmaku' && !playbackSnapshot()) { showNotice(uiText('ui.sendDanmakuHint', '开始播放后可发送弹幕')); return; }
     if (playerOptionsOpen) closePlayerOptions(false);
@@ -4243,11 +4267,12 @@
         playback.generation !== feedGeneration || video.paused || video.seeking || applicationInBackground || applicationHidden() || rangeStallTimer) return;
     var generation = playback.generation;
     var lastPosition = Math.max(0, Number(video.currentTime) || 0);
-    // The Range proxy can spend up to three 12-second upstream attempts plus
-    // bounded retry delays. Do not replace that resumable request with a full
-    // download before its recovery window has elapsed. MPV's own output-ready
-    // timeout is 25 seconds, so keep a small margin above both limits.
-    var stallDelay = playbackEngineName() === 'mpv' ? 40000 : 45000;
+    // A webOS first-chunk stall is a preparation failure, not normal playback
+    // buffering. Its old 45-second window allowed a failed transition to sit
+    // behind two or more upstream Range timeouts. Once the timer fires,
+    // fallbackRangePlayback keeps the previous frame/loading state and starts
+    // the complete-file path. Other players retain their existing windows.
+    var stallDelay = webosShell && !playback.started ? webOSRangeStallFallbackMs : playbackEngineName() === 'mpv' ? 40000 : 45000;
     rangeStallTimer = setTimeout(function () {
       rangeStallTimer = null;
       if (activePlayback !== playback || generation !== feedGeneration || playback.mode !== 'range' ||
@@ -7539,6 +7564,11 @@
   });
   media.addEventListener('webosaudioenabledchange', function (event) {
     if (!webosShell) return;
+    if (event.detail && event.detail.enabled && window.HongguoWebOSAudio && typeof window.HongguoWebOSAudio.choose === 'function') {
+      // Do not allow an old or external toggle to re-enable the experiment
+      // while its UI is intentionally unavailable.
+      window.HongguoWebOSAudio.choose(false);
+    }
     if (event.detail && !event.detail.enabled) { playbackPreferences.speed = 1; savePlaybackPreferences(); }
     updatePlaybackControls();
   });
@@ -7868,18 +7898,12 @@
   var webosAudio = webosShell && window.HongguoWebOSAudio;
   if (webosAudio && webosAudio.supported) {
     var webosAudioToggle = document.getElementById('webos-audio-toggle');
-    document.getElementById('webos-audio-settings').classList.remove('is-hidden');
-    var renderWebosAudioSetting = function () {
-      var enabled = webosAudio.isEnabled();
-      webosAudioToggle.setAttribute('aria-pressed', enabled ? 'true' : 'false');
-      webosAudioToggle.classList.toggle('account-primary', enabled);
-      webosAudioToggle.textContent = uiText(enabled ? 'settings.autoCinemaEnabled' : 'settings.autoCinemaDisabled', enabled ? '已开启' : '已关闭');
-    };
-    webosAudioToggle.addEventListener('click', function () {
-      if (!webosAudio.choose(!webosAudio.isEnabled())) showNotice(uiText('settings.saveFailed', '设置未能保存，请重试。'));
-      renderWebosAudioSetting();
-    });
-    renderWebosAudioSetting();
+    // Keep the experiment code available for later repair, but remove its
+    // settings surface and clear any value saved by an older build.
+    document.getElementById('webos-audio-settings').classList.add('is-hidden');
+    webosAudioToggle.tabIndex = -1;
+    webosAudioToggle.setAttribute('aria-hidden', 'true');
+    webosAudio.choose(false);
   }
   var licenses = document.getElementById('app-open-licenses');
   if (window.HongguoNativePlayer && window.HongguoNativePlayer.showLicenses) {

@@ -15,5 +15,5 @@ test('MPV opts into Range playback and retains the normal full-file fallback con
   assert.match(source, /var params = \{ series_id: item\.series_id, vid: vid, quality: playbackPreferences\.quality, fallback: '1', mode: playbackMode \}/);
   assert.match(source, /Object\.assign\(\{\}, target, \{ prefetch: '1' \}\)/);
   assert.match(source, /new URLSearchParams\(\{ series_id: playback\.item\.series_id, vid: playback\.vid, quality: playbackPreferences\.quality, fallback: '1' \}\)/);
-  assert.match(source, /var stallDelay = playbackEngineName\(\) === 'mpv' \? 40000 : 45000/);
+  assert.match(source, /var stallDelay = webosShell && !playback\.started \? webOSRangeStallFallbackMs : playbackEngineName\(\) === 'mpv' \? 40000 : 45000/);
 });

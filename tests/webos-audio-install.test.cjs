@@ -38,11 +38,12 @@ const source=fs.readFileSync(require.resolve('../core/cmd/hongguotv/ui/app.js'),
 test('other platform bundles do not load the webOS audio scripts',()=>{
  const html=fs.readFileSync(require.resolve('../core/cmd/hongguotv/ui/index.html'),'utf8');assert(!/src=["'][^"']*webos-(audio|wsola)/.test(html));
 });
-test('actual settings renderer keeps focus on the same toggle; other platforms leave it hidden',()=>{
- const a=source.indexOf('  var webosAudio = webosShell'),body=source.slice(a,source.indexOf('  var licenses =',a));let enabled=false,click;
- const toggle={setAttribute(){},classList:{toggle(){}},addEventListener:(_,fn)=>click=fn},card={classList:{remove(){}}};
- const c={webosShell:true,window:{HongguoWebOSAudio:{supported:true,isEnabled:()=>enabled,choose:v=>{enabled=v;return true;}}},document:{activeElement:toggle,getElementById:id=>id==='webos-audio-toggle'?toggle:card},uiText:(_,f)=>f,showNotice(){throw Error('unexpected notice')}};
- vm.runInNewContext(body,c);click();assert.equal(enabled,true);assert.equal(c.document.activeElement,toggle);click();assert.equal(enabled,false);
+test('webOS audible speed settings stay hidden and clear old enabled state; other platforms leave it hidden',()=>{
+ const a=source.indexOf('  var webosAudio = webosShell'),body=source.slice(a,source.indexOf('  var licenses =',a));let enabled=true,disabled=0,cardHidden=false;
+ const toggle={tabIndex:0,setAttribute(){}};
+ const card={classList:{add(name){if(name==='is-hidden')cardHidden=true;}}};
+ const c={webosShell:true,window:{HongguoWebOSAudio:{supported:true,isEnabled:()=>enabled,choose:v=>{if(!v)disabled++;enabled=v;return true;}}},document:{getElementById:id=>id==='webos-audio-toggle'?toggle:card}};
+ vm.runInNewContext(body,c);assert.equal(cardHidden,true);assert.equal(disabled,1);assert.equal(enabled,false);assert.equal(toggle.tabIndex,-1);
  vm.runInNewContext(body,{webosShell:false,window:{},document:{getElementById(){throw Error('other platform touched')}}});
 });
 test('actual remote focus graph enters the experiment and returns from update controls',()=>{

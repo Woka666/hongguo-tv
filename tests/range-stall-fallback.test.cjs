@@ -10,7 +10,7 @@ const start = source.indexOf('  function scheduleRangeStallFallback(');
 const end = source.indexOf('  function maybePrefetchNextEpisode(', start);
 const schedule = source.slice(start, end).trim();
 
-function fixture(engine='standard') {
+function fixture(engine='standard', webos=false, started=false) {
   const timers = [];
   const video = { currentTime: 30, readyState: 4, paused: false, seeking: false };
   const playback = { mode: 'range', generation: 7, rangeFallbackAttempted: false };
@@ -25,9 +25,12 @@ function fixture(engine='standard') {
     fallbackRangePlayback: () => { context.fallbackCalls += 1; },
     playbackEngineName: () => engine,
     rangeStallTimer: null,
+    webosShell: webos,
+    webOSRangeStallFallbackMs: 8000,
     setTimeout(callback, delay) { timers.push({callback, delay}); return timers.length; },
     video
   });
+  playback.started = started;
   vm.runInContext(schedule + '\nthis.scheduleRangeStallFallback = scheduleRangeStallFallback;', context);
   return {context, playback, timers, video};
 }
@@ -67,6 +70,15 @@ test('MPV waits through the Range retry and output-ready windows before full-fil
   const retryBudget = (rangeRetries + 1) * rangeTimeoutSeconds * 1000 + retryDelays.reduce((sum, delay) => sum + delay, 0);
   assert.ok(f.timers[0].delay >= outputTimeout);
   assert.ok(f.timers[0].delay >= retryBudget, `MPV fallback ${f.timers[0].delay}ms must cover Range retry budget ${retryBudget}ms`);
+});
+
+test('webOS first playback uses the short startup fallback while normal buffering keeps its existing window', () => {
+  const first = fixture('standard', true, false);
+  first.context.scheduleRangeStallFallback(first.playback);
+  assert.equal(first.timers[0].delay, 8000);
+  const playing = fixture('standard', true, true);
+  playing.context.scheduleRangeStallFallback(playing.playback);
+  assert.equal(playing.timers[0].delay, 45000);
 });
 
 test('stale playback generations cannot trigger standard-playback fallback', () => {

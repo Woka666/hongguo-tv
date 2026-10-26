@@ -14,6 +14,11 @@ var MAX_SOURCE_METADATA_BYTES = 24 * 1024 * 1024;
 var CHUNK_BYTES = 512 * 1024;
 var MAX_REDIRECTS = 5;
 var REQUEST_TIMEOUT = 12000;
+// Keep the first media read short so a failed transition reaches the existing
+// complete-file fallback instead of waiting through three 12-second attempts.
+var STARTUP_REQUEST_TIMEOUT = 5000;
+var STARTUP_RETRIES = 1;
+var RANGE_RETRIES = 2;
 var USER_AGENT = 'com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)';
 
 function fail(message, code) {
@@ -37,7 +42,7 @@ function parseContentRange(value) {
   return { start: start, end: end, total: total };
 }
 
-function requestRange(target, start, end, etag, redirects) {
+function requestRange(target, start, end, etag, redirects, timeout) {
   redirects = redirects || 0;
   if (redirects > MAX_REDIRECTS) return Promise.reject(fail('媒体源重定向次数过多'));
   var parsed = url.parse(target);
@@ -73,7 +78,7 @@ function requestRange(target, start, end, etag, redirects) {
         hostname: parsed.hostname,
         port: parsed.port || (parsed.protocol === 'http:' ? 80 : 443),
         path: parsed.path || '/',
-        method: 'GET', headers: headers, timeout: REQUEST_TIMEOUT
+        method: 'GET', headers: headers, timeout: Number(timeout) > 0 ? Number(timeout) : REQUEST_TIMEOUT
       });
     } catch (error) { reject(error); return; }
     request.on('timeout', function () { request.destroy(fail('媒体 Range 请求超时', 'RANGE_TIMEOUT')); });
@@ -89,7 +94,7 @@ function requestRange(target, start, end, etag, redirects) {
           reject(fail('媒体源重定向试图降级到 HTTP'));
           return;
         }
-        requestRange(redirected, start, end, etag, redirects + 1).then(resolve, reject);
+        requestRange(redirected, start, end, etag, redirects + 1, timeout).then(resolve, reject);
         return;
       }
       response.on('data', function (chunk) {
@@ -351,7 +356,7 @@ function open(target, key, metadata) {
       var samples = indexMP4(prefix, key, range.total);
       var metadataBytes = prefix.length + samples.length * 128 + key.length;
       if (metadataBytes > MAX_SOURCE_METADATA_BYTES) throw fail('MP4 Range 索引超过内存限制');
-      return { url: response.url, etag: etag, length: range.total, prefix: prefix, samples: samples, key: Buffer.from(key), vid: String(metadata.vid || ''), quality: String(metadata.quality || '') };
+      return { url: response.url, etag: etag, length: range.total, prefix: prefix, samples: samples, key: Buffer.from(key), vid: String(metadata.vid || ''), quality: String(metadata.quality || ''), firstMediaRead: true };
     });
   });
 }
@@ -424,7 +429,10 @@ function waitRetry(attempt) {
   return new Promise(function (resolve) { setTimeout(resolve, attempt === 1 ? 250 : 600); });
 }
 
-function fetchExact(source, start, end) {
+function fetchExact(source, start, end, options) {
+  options = options || {};
+  var timeout = Number(options.timeout) > 0 ? Number(options.timeout) : REQUEST_TIMEOUT;
+  var maxFailures = Number.isFinite(options.maxFailures) ? Math.max(0, Number(options.maxFailures)) : RANGE_RETRIES;
   var output = Buffer.alloc(end - start + 1);
   var cursor = start;
   var refreshed = false;
@@ -432,7 +440,7 @@ function fetchExact(source, start, end) {
     if (response.status !== 206) {
       var statusError = fail('上游媒体 Range HTTP ' + response.status);
       statusError.status = response.status;
-      if ((response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500) && failures < 2) {
+      if ((response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500) && failures < maxFailures) {
         return waitRetry(failures + 1).then(function () { return requestFrom(failures + 1); });
       }
       throw statusError;
@@ -455,12 +463,12 @@ function fetchExact(source, start, end) {
       cursor += partial.body.length;
       if (cursor > end) return Promise.resolve(output);
     }
-    if (failures >= 2) return Promise.reject(error);
+    if (failures >= maxFailures) return Promise.reject(error);
     return waitRetry(failures + 1).then(function () { return requestFrom(failures + 1); });
   }
   function requestFrom(failures) {
     var target = source.url;
-    return requestRange(target, cursor, end, source.etag, 0).then(function (response) {
+    return requestRange(target, cursor, end, source.etag, 0, timeout).then(function (response) {
       if ([401, 403, 404, 410].indexOf(response.status) >= 0 && !refreshed && typeof source.refresh === 'function') {
         refreshed = true;
         return refreshSource(source, target).then(function () { return requestFrom(0); });
@@ -484,10 +492,12 @@ function fetchMedia(source, start, end) {
     tasks.push({ start: cursor, end: chunkEnd, targetOffset: cursor - start });
     cursor = chunkEnd + 1;
   }
+  var startup = source.firstMediaRead !== false && tasks.length > 0;
+  var requestOptions = startup ? { timeout: STARTUP_REQUEST_TIMEOUT, maxFailures: STARTUP_RETRIES } : null;
   var chain = Promise.resolve();
   tasks.forEach(function (task) {
     chain = chain.then(function () {
-      return fetchExact(source, task.start, task.end).then(function (buffer) { buffer.copy(result, task.targetOffset); });
+      return fetchExact(source, task.start, task.end, requestOptions).then(function (buffer) { buffer.copy(result, task.targetOffset); });
     });
   });
   return chain.then(function () {
@@ -515,6 +525,7 @@ function fetchMedia(source, start, end) {
         fragment.copy(result, from - start);
       }
     }
+    if (startup) source.firstMediaRead = false;
     return result;
   });
 }
