@@ -29,6 +29,7 @@ var provider = {
   calendar: function () { return Promise.resolve({ items: [], calendar: {} }); },
   detail: function (seriesID) { return Promise.resolve({ series_id: seriesID, title: 'fixture' }); },
   seasons: function (seriesID) { return Promise.resolve({ items: [{ series_id: seriesID, season_index: 1, playable: true }] }); },
+  nextSeason: function (seriesID) { return Promise.resolve({ current_season: 1, next: null, series_id: seriesID }); },
   suggestions: function () { return Promise.resolve({ items: [] }); },
   actorWorks: function () { return Promise.resolve({ actor: {}, items: [] }); },
   radar: function () { return Promise.resolve({ ranks: {}, growth: {} }); },

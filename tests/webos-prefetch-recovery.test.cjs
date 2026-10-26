@@ -95,12 +95,29 @@ test('successful sharing still resolves only once', async () => {
   } finally { f.close(); }
 });
 
-test('speculative-only and direct foreground errors do not gain automatic retries', async () => {
-  for (const prefetch of [true, false]) {
-    const f = fixture([{ status: 502 }]);
-    try { assert.equal((await observe(f.prepare(prefetch))).error.code, 'VIDEO_MODEL_HTTP'); await pause(300); assert.equal(f.requests.length, 1); }
-    finally { f.close(); }
-  }
+test('speculative errors stay single-shot while direct foreground errors retry twice at most', async () => {
+  const speculative = fixture([{ status: 502 }]);
+  try {
+    const result = await observe(speculative.prepare(true));
+    assert.equal(result.error.code, 'VIDEO_MODEL_HTTP');
+    await pause(300);
+    assert.equal(speculative.requests.length, 1, 'speculative preparation must not self-retry');
+  } finally { speculative.close(); }
+
+  const recovered = fixture([{ status: 502 }, {}]);
+  try {
+    const result = await observe(recovered.prepare(false));
+    assert(!result.error, 'a direct foreground transient error should recover once');
+    assert.equal(recovered.requests.length, 2);
+    assert.equal(result.value.preparation_timing.media_resolve_retries, 1);
+  } finally { recovered.close(); }
+
+  const exhausted = fixture([{ status: 502 }, { status: 503 }, { status: 504 }, {}]);
+  try {
+    const result = await observe(exhausted.prepare(false));
+    assert.equal(result.error.code, 'VIDEO_MODEL_HTTP');
+    assert.equal(exhausted.requests.length, 3, 'foreground retry budget is bounded to two retries');
+  } finally { exhausted.close(); }
 });
 
 test('concurrent foreground consumers share the one recovery, including a late join', async () => {

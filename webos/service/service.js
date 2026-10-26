@@ -187,7 +187,7 @@
         return provider.rank(q).then(function (result) { data(req, res, result); }, function (error) { failure(req, res, error); });
       }
       if (pathName === '/api/v1/lists/search' || pathName === '/api/v1/search' || pathName === '/api/v1/Search') {
-        return provider.search(String(q.q || '')).then(function (result) { data(req, res, result); }, function (error) { failure(req, res, error); });
+        return provider.search(q).then(function (result) { data(req, res, result); }, function (error) { failure(req, res, error); });
       }
       if (pathName === '/api/v1/lists/reservations') {
         if (req.method !== 'GET' && req.method !== 'HEAD') return failure(req, res, new Error('method not allowed'));
@@ -228,12 +228,8 @@
         return provider.seasons(String(q.series_id || '')).then(function (result) { data(req, res, result); }, function (error) { failure(req, res, error); });
       }
       if (pathName === '/api/v1/series/next-season') {
-        return provider.seasons(String(q.series_id || '')).then(function (result) {
-          var rows = result.items || [], current = 0, next = null;
-          rows.forEach(function (item) { var index = Number(item.season_index) || Number(String(item.label || '').replace(/[^0-9]/g, '')) || 0; if (String(item.series_id) === String(q.series_id)) current = index; else if (item.playable && index > current && (!next || index < next._season_index)) { next = item; next._season_index = index; } });
-          if (next) delete next._season_index;
-          return { current_season: current, next: next || null };
-        }).then(function (result) { data(req, res, result); }, function (error) { failure(req, res, error); });
+        if (typeof provider.nextSeason !== 'function') return failure(req, res, new Error('系列剧季关系服务未接入'));
+        return provider.nextSeason(String(q.series_id || '')).then(function (result) { data(req, res, result); }, function (error) { failure(req, res, error); });
       }
       if (pathName === '/api/v1/search/suggestions') {
         return provider.suggestions(String(q.q || '')).then(function (result) { data(req, res, result); }, function (error) { failure(req, res, error); });

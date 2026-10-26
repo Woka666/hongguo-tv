@@ -46,13 +46,14 @@
     return ['VIDEO_MODEL_EMPTY', 'UPSTREAM_TIMEOUT', 'ETIMEDOUT', 'ESOCKETTIMEDOUT', 'ECONNRESET',
       'ECONNREFUSED', 'EPIPE', 'EAI_AGAIN', 'ENETUNREACH', 'EHOSTUNREACH', 'ENETDOWN'].indexOf(error.code) >= 0;
   }
-  function recoveryDelay(signal) {
+  function recoveryDelay(signal, delay) {
     return new Promise(function (resolve, reject) {
       var timer;
+      if (!signal) { timer = setTimeout(resolve, Number(delay) || 250); return; }
       function aborted() { clearTimeout(timer); signal.removeEventListener('abort', aborted); reject(preparationCancelled()); }
       if (signal.aborted) { reject(preparationCancelled()); return; }
       signal.addEventListener('abort', aborted);
-      timer = setTimeout(function () { signal.removeEventListener('abort', aborted); resolve(); }, 250);
+      timer = setTimeout(function () { signal.removeEventListener('abort', aborted); resolve(); }, Number(delay) || 250);
     });
   }
   function parseExactJSON(text) {
@@ -323,7 +324,10 @@
   function modelString(value) { if (typeof value === 'string') return trim(value); if (value == null) return ''; return String(value); }
   function modelRows(value) { return Array.isArray(value) ? value : (value && typeof value === 'object' ? [value] : []); }
 
-  function videoOptions(vid, signal) {
+  function videoOptions(vid, signal, retry) {
+    retry = retry || {};
+    var transientRetries = 0;
+    var maxTransientRetries = Math.max(0, Number(retry.maxTransientRetries) || 0);
     var attempt = 0;
     var startedAt = Date.now();
     function next() {
@@ -387,6 +391,12 @@
         return options;
       }).catch(function (error) {
         if (attempt < 3 && /空响应/.test(String(error.message || error))) return next();
+        if (maxTransientRetries > transientRetries && error && error.code !== 'VIDEO_MODEL_EMPTY' && transientVideoModelError(error)) {
+          var delay = transientRetries === 0 ? 250 : 1000;
+          transientRetries++;
+          if (typeof retry.onRetry === 'function') retry.onRetry(error, delay, transientRetries);
+          return recoveryDelay(signal, delay).then(next);
+        }
         if (lastVideoModelDiagnostic && lastVideoModelDiagnostic.video_id === String(vid) && lastVideoModelDiagnostic.code === 'VIDEO_MODEL_RESPONSE') {
           lastVideoModelDiagnostic.code = error && error.code || 'VIDEO_MODEL_NETWORK';
           lastVideoModelDiagnostic.stage = error && error.stage || 'video_model_transport';
@@ -613,7 +623,14 @@
       report: { media_mode: wantsRange ? 'range' : 'full', media_preparation_stage: 'resolve' } };
     rememberPreparation(token, record.report);
     var job = measurePreparation(record.report, 'resolve', 'media_resolve_ms', function () {
-      return videoOptions(vid).catch(function (error) {
+      return videoOptions(vid, signal, {
+        maxTransientRetries: prefetch ? 0 : 2,
+        onRetry: function (error, delay, count) {
+          record.report.media_resolve_retries = count;
+          record.report.media_resolve_retry_reason = error && error.code || 'VIDEO_MODEL_TRANSIENT';
+          record.report.media_resolve_retry_delay_ms = delay;
+        }
+      }).catch(function (error) {
         if (!record.speculative || !record.foregroundUsers || !transientVideoModelError(error)) throw error;
         record.recoveryCancel = audioCancel.create();
         // Keep this same job registered during backoff and recovery, so all
@@ -1106,7 +1123,111 @@
       return { items: (data.subscribe_items || []).map(publicationItem).filter(Boolean), has_more: (bool(data.has_more) || bool(loc.down_has_more)) && advances, next_offset: next, session_id: first(data.session_id), next_subscribe_offset: subOffset, calendar: { dates: stringArray(schema.date_list), default_date: first(schema.default_date), current_date: first(schema.current_date) }, source: 'webos-calendar-api' };
     });
   }
-  function search(query) { return fetchHTML(WEB_BASE + '/search/' + encodeURIComponent(query)).then(function (html) { return { items: normalizeRows(findArray(routerData(html), 'searchList') || []), source: 'webos-web' }; }); }
+  function appendSearchRows(value, items, seen, depth) {
+    if (depth > 6 || value == null) return;
+    if (typeof value === 'string') {
+      try { appendSearchRows(parseExactJSON(value), items, seen, depth + 1); } catch (ignored) {}
+      return;
+    }
+    if (Array.isArray(value)) { value.forEach(function (row) { appendSearchRows(row, items, seen, depth + 1); }); return; }
+    if (typeof value !== 'object') return;
+    if (Array.isArray(value.video_data)) {
+      value.video_data.forEach(function (row) { appendSearchRows(row, items, seen, depth + 1); });
+    } else {
+      var drama = normalize(value);
+      if (drama && validID(drama.series_id) && drama.series_id !== '0' && drama.episode_count > 0 && !seen[drama.series_id]) {
+        seen[drama.series_id] = true; items.push(drama);
+      }
+    }
+    ['cell_data', 'data', 'items'].forEach(function (key) { if (value[key] != null) appendSearchRows(value[key], items, seen, depth + 1); });
+    if (value.lynx_data) appendSearchRows(value.lynx_data, items, seen, depth + 1);
+  }
+
+  function parseAppSearch(payload, offset) {
+    var data = payload && payload.data || {};
+    var tabs = Array.isArray(data.search_tabs) ? data.search_tabs : Array.isArray(payload && payload.search_tabs) ? payload.search_tabs : [];
+    var tab = tabs.filter(function (item) { return Number(item && item.tab_type) === 11; })[0];
+    if (!tab) throw fail('App 搜索响应没有短剧分区', 502, 'APP_SEARCH_EMPTY', 'search');
+    var items = [], seen = {};
+    appendSearchRows(tab.data || [], items, seen, 0);
+    var next = number(tab.next_offset);
+    var hasMore = bool(tab.has_more);
+    if (next <= offset) hasMore = false;
+    return { items: items, has_more: hasMore, next_offset: next, search_id: first(tab.search_id), passback: first(tab.passback), source: 'app' };
+  }
+
+  function searchApp(query) {
+    var offset = Number(query.offset) || 0;
+    var params = {
+      bookshelf_search_plan: '4', use_correct: 'true', user_is_login: '0', query: trim(query.q),
+      count: '20', offset: String(offset), tab_type: '11', search_id: first(query.search_id), passback: first(query.passback)
+    };
+    return signedJSON('/reading/bookapi/search/tab/v', 'GET', params, null).then(function (payload) {
+      return parseAppSearch(payload, offset);
+    });
+  }
+
+  function parseWebSearch(payload, page) {
+    var rows = payload && payload.searchList;
+    var pageNumber = number(payload && payload.pageNum);
+    var totalPages = number(payload && payload.totalPages);
+    if (!Array.isArray(rows) || pageNumber !== page || totalPages < 0) throw fail('官网搜索响应缺少有效分页信息', 502, 'WEB_SEARCH_INVALID', 'search');
+    var items = [], seen = {};
+    rows.forEach(function (row) {
+      if (!row || typeof row !== 'object' || !row.video_data || typeof row.video_data !== 'object') return;
+      appendSearchRows(row.video_data, items, seen, 0);
+    });
+    var hasMore = bool(payload.hasMore) && (totalPages === 0 || page < totalPages) && rows.length > 0;
+    return { items: items, has_more: hasMore, next_offset: page, source: 'web' };
+  }
+
+  function searchWebsite(query, page) {
+    var target = WEB_BASE + '/api/search/result?query=' + querystring.escape(trim(query));
+    if (page > 1) target += '&page=' + String(page);
+    var attempt = 0;
+    function requestPage() {
+      attempt++;
+      return requestBuffer(target, 'GET', { 'User-Agent': 'Mozilla/5.0 (Android TV; HongguoTV)', Accept: 'application/json', Referer: WEB_BASE + '/' }, null, MAX_JSON).then(function (response) {
+        if (response.status < 200 || response.status >= 300) {
+          var statusError = fail('官网搜索 HTTP ' + response.status, response.status, 'WEB_SEARCH_HTTP', 'search');
+          if (attempt < 2 && response.status >= 500) return requestPage();
+          throw statusError;
+        }
+        var text = response.body.toString('utf8');
+        if (!trim(text)) throw fail('官网搜索返回空响应', 502, 'WEB_SEARCH_EMPTY', 'search');
+        try { return parseWebSearch(parseExactJSON(text), page); } catch (error) {
+          if (error && error.code === 'WEB_SEARCH_INVALID') throw error;
+          throw fail('官网搜索响应不是有效 JSON', 502, 'WEB_SEARCH_INVALID', 'search');
+        }
+      }).catch(function (error) {
+        if (attempt < 2 && error && ['ECONNRESET', 'ETIMEDOUT', 'UPSTREAM_TIMEOUT', 'EAI_AGAIN', 'ENETUNREACH'].indexOf(error.code) >= 0) return requestPage();
+        throw error;
+      });
+    }
+    return requestPage();
+  }
+
+  function search(query) {
+    query = query || {};
+    var text = trim(query.q);
+    if (!text || text.length > 80) return Promise.reject(fail('搜索关键词无效', 400, 'SEARCH_PARAMETERS'));
+    var source = first(query.source);
+    if (source && source !== 'app' && source !== 'web') return Promise.reject(fail('搜索来源无效', 400, 'SEARCH_SOURCE_INVALID'));
+    var rawOffset = query.offset == null || query.offset === '' ? '0' : String(query.offset);
+    if (!/^\d{1,6}$/.test(rawOffset) || Number(rawOffset) > 100000) return Promise.reject(fail('搜索分页位置无效', 400, 'SEARCH_PARAMETERS'));
+    var offset = Number(rawOffset);
+    if (source === 'web') return searchWebsite(text, offset + 1);
+    if (source === 'app') return searchApp(query);
+    if (offset !== 0) return Promise.reject(fail('搜索分页来源缺失', 400, 'SEARCH_SOURCE_REQUIRED'));
+    return searchApp({ q: text, offset: 0 }).catch(function (error) {
+      // Website JSON is a deliberate first-page fallback. It has no App
+      // device identity, cookie, search_id, or passback cursor.
+      return searchWebsite(text, 1).catch(function (webError) {
+        var combined = fail('App 搜索失败：' + String(error && error.message || error) + '；官网搜索失败：' + String(webError && webError.message || webError), 502, 'SEARCH_FAILED', 'search');
+        throw combined;
+      });
+    });
+  }
   function detail(seriesID) { return fetchHTML(WEB_BASE + '/detail?series_id=' + encodeURIComponent(seriesID)).then(function (html) { var router = routerData(html); var raw = findObject(router, 'seriesDetail'); var drama = normalize(raw); if (!drama || drama.series_id !== seriesID) throw fail('详情响应缺少剧集信息'); drama.episodes = (drama.vid_list || []).map(function (vid, index) { return { index: index + 1, video_id: vid, title: '第' + (index + 1) + '集', locked: index >= drama.accessible_episode_cnt }; }); var actors = normalizeSeriesActors(raw); if (!actors.length) actors = normalizeSeriesActors(router); return { series_id: drama.series_id, title: drama.title, cover: drama.cover, intro: drama.intro, score: drama.score, play_count: drama.play_count, episode_count: drama.episode_count, accessible_episode_cnt: drama.accessible_episode_cnt, vid: drama.vid, vid_list: drama.vid_list, episodes: drama.episodes, tags: drama.tags, actors: actors, related: normalizeRelatedDramas(router, seriesID), reviews: normalizeSeriesReviews(router) }; }); }
 
   function fallbackSeason(seriesID, error) {
@@ -1120,41 +1241,81 @@
     });
   }
 
-  function seriesSeasons(seriesID) {
-    if (!validID(seriesID)) return Promise.reject(fail('series_id 无效'));
+  function seasonLabelRows(value) {
+    return (Array.isArray(value) ? value : []).map(function (entry) {
+      if (entry && typeof entry === 'object') return first(entry.content, entry.name, entry.show_name, entry.text);
+      return trim(entry);
+    }).filter(Boolean);
+  }
+
+  function parseOfficialSeasons(payload) {
+    if (!payload || String(payload.code) !== '0') throw fail('官方系列剧未确认请求成功');
+    var blocks = payload.data;
+    if (!Array.isArray(blocks)) throw fail('官方系列剧响应缺少列表');
+    var seen = {}, items = [];
+    blocks.forEach(function (block) {
+      (block && Array.isArray(block.video_data) ? block.video_data : []).forEach(function (row) {
+        var item = normalize(row);
+        if (!item || !validID(item.series_id) || seen[item.series_id]) return;
+        seen[item.series_id] = true;
+        var labels = seasonLabelRows(row.secondary_info_list);
+        item.label = labels.filter(function (x) { return /^第[1-9][0-9]*季$/.test(x); })[0] || '';
+        item.season_index = Number(item.season_index) || Number((item.label.match(/[0-9]+/) || [0])[0]) || 0;
+        item.subtitle = seasonLabelRows(row.sub_title_list).join(' · ');
+        item.is_multi_season = true;
+        var subscribe = row.subscribe_item && typeof row.subscribe_item === 'object' ? row.subscribe_item : null;
+        item.upcoming = !!subscribe || !item.vid || !item.episode_count;
+        item.playable = !item.upcoming && !row.disable_play;
+        item.reservation_id = item.upcoming && subscribe ? item.series_id : '';
+        item.reserved = !!(subscribe && (subscribe.is_subscribed === true || subscribe.is_subscribed === 1));
+        if (item.upcoming) item.vid = '';
+        items.push(item);
+      });
+    });
+    return items;
+  }
+
+  function loadSeasonRows(seriesID) {
     var params = { scene: '10', from: 'single_col_same_ip_series', offset: '0', limit: '0', total_chapter_num: '0', current_chapter_num: '0', post_id: '0', is_horizontal_screen: 'false', bookstore_tab: '0', bookstore_tab_type: '0', book_id: seriesID, filter_ids: seriesID };
     params.from = 'series_short_play_info';
-    return miniJSON('/reading/bookapi/plan/v', params).then(function (payload) {
-      if (!payload || String(payload.code) !== '0') throw fail('官方系列剧未确认请求成功');
-      var blocks = payload.data;
-      if (!Array.isArray(blocks)) throw fail('官方系列剧响应缺少列表');
-      var seen = {};
-      var items = [];
-      blocks.forEach(function (block) {
-        (block && Array.isArray(block.video_data) ? block.video_data : []).forEach(function (row) {
-          var item = normalize(row);
-          if (!item || seen[item.series_id]) return;
-          seen[item.series_id] = true;
-          var labels = stringArray(row.secondary_info_list);
-          item.label = labels.filter(function (x) { return /^第[1-9][0-9]*季$/.test(x); })[0] || '';
-          item.subtitle = stringArray(row.sub_title_list).join(' · ');
-          item.is_multi_season = true;
-          var subscribe = row.subscribe_item && typeof row.subscribe_item === 'object' ? row.subscribe_item : null;
-          item.upcoming = !!subscribe || !item.vid || !item.episode_count;
-          item.playable = !item.upcoming && !row.disable_play;
-          item.reservation_id = item.upcoming && subscribe ? item.series_id : '';
-          item.reserved = !!(subscribe && (subscribe.is_subscribed === true || subscribe.is_subscribed === 1));
-          if (item.upcoming) item.vid = '';
-          items.push(item);
-        });
-      });
-      if (!items.length) return fallbackSeason(seriesID, fail('官方系列剧列表为空'));
+    return miniJSON('/reading/bookapi/plan/v', params).then(parseOfficialSeasons).then(function (items) {
+      if (!items.length) throw fail('官方系列剧列表为空');
+      return items;
+    });
+  }
+
+  function seriesSeasons(seriesID) {
+    if (!validID(seriesID)) return Promise.reject(fail('series_id 无效'));
+    return loadSeasonRows(seriesID).then(function (items) {
       return { items: items, source: 'webos-plan' };
     }).catch(function (error) {
       // Some webOS networks receive an empty plan response even though the
       // public detail page is available. Keep the season selector truthful by
       // exposing the confirmed current season instead of inventing siblings.
       return fallbackSeason(seriesID, error);
+    });
+  }
+
+  function nextSeason(seriesID) {
+    if (!validID(seriesID)) return Promise.reject(fail('series_id 无效'));
+    return loadSeasonRows(seriesID).then(function (items) {
+      var current = items.filter(function (item) { return String(item.series_id) === String(seriesID); })[0];
+      var currentIndex = current && Number(current.season_index) || 0;
+      var sibling = items.filter(function (item) { return String(item.series_id) !== String(seriesID) && item.playable && Number(item.season_index) > 0; }).sort(function (a, b) { return Number(a.season_index) - Number(b.season_index); })[0];
+      if (!sibling) return { current_season: currentIndex, next: null };
+      function choose() {
+        var next = items.filter(function (item) { return String(item.series_id) !== String(seriesID) && item.playable && Number(item.season_index) > currentIndex; }).sort(function (a, b) { return Number(a.season_index) - Number(b.season_index); })[0] || null;
+        return { current_season: currentIndex, next: next };
+      }
+      if (currentIndex > 0) return choose();
+      // plan/v can omit the requested current season. Confirm its number from
+      // a sibling's reciprocal relation before crossing to another season.
+      return loadSeasonRows(sibling.series_id).then(function (reciprocal) {
+        var confirmed = reciprocal.filter(function (item) { return String(item.series_id) === String(seriesID); })[0];
+        if (!confirmed || Number(confirmed.season_index) <= 0) throw fail('官方季关系未确认当前季，已停止自动跨季');
+        currentIndex = Number(confirmed.season_index);
+        return choose();
+      });
     });
   }
 
@@ -1385,7 +1546,7 @@
   module.exports = {
     prepare: prepare, prepareAudio: prepareAudio, serveMedia: serveMedia, category: category,
     recommend: recommend, newSeries: newSeries, calendar: calendar,
-    rank: rank, search: search, detail: detail, seasons: seriesSeasons,
+    rank: rank, search: search, detail: detail, seasons: seriesSeasons, nextSeason: nextSeason,
     suggestions: suggestions, actorWorks: actorWorks, engagement: engagement, discussion: discussion, replies: replies,
     radar: radar, library: library, changeLibrary: changeLibrary,
     dataDirectory: dataDirectory,
