@@ -7869,12 +7869,12 @@
   if (webosAudio && webosAudio.supported) {
     var webosAudioToggle = document.getElementById('webos-audio-toggle');
     document.getElementById('webos-audio-settings').classList.remove('is-hidden');
-    function renderWebosAudioSetting() {
+    var renderWebosAudioSetting = function () {
       var enabled = webosAudio.isEnabled();
       webosAudioToggle.setAttribute('aria-pressed', enabled ? 'true' : 'false');
       webosAudioToggle.classList.toggle('account-primary', enabled);
       webosAudioToggle.textContent = uiText(enabled ? 'settings.autoCinemaEnabled' : 'settings.autoCinemaDisabled', enabled ? '已开启' : '已关闭');
-    }
+    };
     webosAudioToggle.addEventListener('click', function () {
       if (!webosAudio.choose(!webosAudio.isEnabled())) showNotice(uiText('settings.saveFailed', '设置未能保存，请重试。'));
       renderWebosAudioSetting();
