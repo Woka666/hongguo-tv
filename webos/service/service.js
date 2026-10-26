@@ -163,7 +163,15 @@
       }
       if (pathName === '/minireel-proxy/resolve' || pathName === '/api/v1/play/info' || pathName === '/api/v1/PlayInfo') {
         var seriesID = String(q.series_id || ''), vid = String(q.vid || '');
-        return provider.prepare(seriesID, vid, String(q.quality || ''), String(q.fallback || '') === '1', String(q.mode || ''), String(q.prefetch || '') === '1').then(function (result) { data(req, res, result); }, function (error) { failure(req, res, error); });
+        var preparationAbort = require('./audio-cancel').create();
+        function stopPreparation() { preparationAbort.abort('PLAYBACK_PREPARATION_CANCELLED'); }
+        function detachPreparation() { req.removeListener('aborted', stopPreparation); res.removeListener('close', stopPreparation); }
+        req.once('aborted', stopPreparation); res.once('close', stopPreparation);
+        return provider.prepare(seriesID, vid, String(q.quality || ''), String(q.fallback || '') === '1', String(q.mode || ''), String(q.prefetch || '') === '1', preparationAbort.signal).then(function (result) {
+          detachPreparation(); if (!res.destroyed && !preparationAbort.signal.aborted) data(req, res, result);
+        }, function (error) {
+          detachPreparation(); if (!res.destroyed && !preparationAbort.signal.aborted) failure(req, res, error);
+        });
       }
       if (pathName === '/api/v1/category' || pathName === '/api/v1/Category') {
         return provider.category(String(q.path || '/category/real-drama'), Number(q.offset || 0), q, String(q.selectors || '') === '1').then(function (result) { data(req, res, result); }, function (error) { failure(req, res, error); });
