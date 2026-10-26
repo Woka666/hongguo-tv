@@ -1,8 +1,8 @@
 # 红果短剧 Linux AppImage 测试版
 
-本次 0.2.121 同步统一主线版本。本轮修复位于 webOS Range 服务，Linux 保持原有系统 HTML5 播放与倍速逻辑。
+本次 0.2.122 同步统一主线版本。本轮修复位于 webOS 视频预加载恢复逻辑，Linux 保持原有系统 HTML5 播放与倍速逻辑。
 
-Linux x86_64 测试版已通过 Ubuntu 24.04 与 Debian 12 容器中的真实红果数据和视频播放检查。测试使用 Xvfb、软件图形和软件解码，不能替代用户机器上的安装、硬件解码、显示器或扬声器验证。
+本次 Linux x86_64 AppImage 须通过 Ubuntu 24.04 与 Debian 12 容器中的真实红果数据和视频播放检查后才发布。测试使用 Xvfb、软件图形和软件解码，不能替代用户机器上的安装、硬件解码、显示器或扬声器验证。
 
 AppImage 依赖系统提供 WebKitGTK 4.1、GTK 3、GStreamer 及 HEVC/AAC 解码插件。推荐在 Ubuntu 24.04 或 Debian 12 使用；其他发行版和桌面环境尚未验证。安装所需运行库：
 
