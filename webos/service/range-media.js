@@ -545,7 +545,10 @@ function serve(req, res, source, onStatus) {
   if (range.partial) res.setHeader('Content-Range', 'bytes ' + start + '-' + end + '/' + source.length);
   if (req.method === 'HEAD') return res.end();
   function writeChunk(cursor) {
-    if (cursor > end || res.destroyed) return;
+    if (res.destroyed) return;
+    // Content-Length completes the client's body parser, but Node still needs
+    // end() to release this response and send the next one on a reused socket.
+    if (cursor > end) return res.end();
     var chunkEnd = Math.min(end, cursor + CHUNK_BYTES - 1);
     fetchMedia(source, cursor, chunkEnd).then(function (buffer) {
       if (res.write(buffer)) writeChunk(chunkEnd + 1);

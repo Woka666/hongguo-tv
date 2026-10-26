@@ -178,6 +178,79 @@ async function testFullDownloadRedirectFallbackHelper() {
   }
 }
 
+async function testPersistentMediaResponses() {
+  var fixture = makeFixture();
+  var upstream = http.createServer(function (request, response) {
+    var range = rangeMedia.parseByteRange(request.headers.range, fixture.bytes.length);
+    response.statusCode = 206;
+    response.setHeader('ETag', ETAG);
+    response.setHeader('Content-Range', 'bytes ' + range.start + '-' + range.end + '/' + fixture.bytes.length);
+    response.end(fixture.bytes.slice(range.start, range.end + 1));
+  });
+  var upstreamPort = await listen(upstream);
+  var local, agent, sockets = [], finished = 0;
+  try {
+    var source = await rangeMedia.open('http://127.0.0.1:' + upstreamPort + '/media', fixture.key);
+    // More than two output chunks also exercises ServerResponse backpressure.
+    var largeBytes = Buffer.alloc(1024 * 1024 + 17, 37);
+    var largeSource = { prefix: largeBytes, length: largeBytes.length, samples: [], etag: ETAG };
+    local = http.createServer(function (request, response) {
+      response.once('finish', function () { finished++; });
+      rangeMedia.serve(request, response, request.url === '/large' ? largeSource : source);
+    });
+    local.on('connection', function (socket) { sockets.push(socket); });
+    var localPort = await listen(local);
+    agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+    function read(pathName, headers, method) {
+      return new Promise(function (resolve, reject) {
+        var request = http.request({ host: '127.0.0.1', port: localPort, path: pathName,
+          method: method || 'GET', agent: agent, headers: headers || {} }, function (response) {
+          var chunks = [];
+          response.on('data', function (chunk) { chunks.push(chunk); });
+          response.on('error', reject);
+          response.on('end', function () {
+            resolve({ status: response.statusCode, headers: response.headers, body: Buffer.concat(chunks) });
+          });
+        });
+        var deadline = setTimeout(function () {
+          request.destroy(new Error('a subsequent media request is blocked on the persistent connection'));
+        }, 2000);
+        request.on('close', function () { clearTimeout(deadline); });
+        request.on('error', reject);
+        request.end();
+      });
+    }
+    // A player can probe the MP4 prefix, then ask for sample data on the same
+    // connection. Receiving Content-Length bytes does not end Node's response.
+    var probe = await read('/media', { Range: 'bytes=0-1' });
+    assert.strictEqual(probe.status, 206);
+    assert.deepStrictEqual(probe.body, source.prefix.slice(0, 2));
+    var start = fixture.sampleOffset + 7, end = fixture.sampleOffset + 36;
+    var sample = await read('/media', { Range: 'bytes=' + start + '-' + end, 'If-Range': ETAG });
+    assert.strictEqual(sample.status, 206);
+    assert.deepStrictEqual(sample.body, fixture.plain.slice(7, 37));
+    var head = await read('/media', { Range: 'bytes=0-1' }, 'HEAD');
+    assert.strictEqual(head.status, 206);
+    assert.strictEqual(head.body.length, 0);
+    var full = await read('/media');
+    assert.strictEqual(full.status, 200);
+    assert.strictEqual(full.body.length, source.length);
+    assert.deepStrictEqual(full.body.slice(fixture.sampleOffset), fixture.plain);
+    var large = await read('/large', { Range: 'bytes=0-' });
+    assert.strictEqual(large.status, 206);
+    assert.deepStrictEqual(large.body, largeBytes);
+    var afterLarge = await read('/media', { Range: 'bytes=-3' });
+    assert.deepStrictEqual(afterLarge.body, fixture.plain.slice(-3));
+    assert.strictEqual(sockets.length, 1, 'all six requests must reuse one TCP connection');
+    assert.strictEqual(finished, 6, 'each media response must finish and release its active read');
+  } finally {
+    if (agent) agent.destroy();
+    sockets.forEach(function (socket) { socket.destroy(); });
+    if (local) await close(local);
+    await close(upstream);
+  }
+}
+
 async function run() {
   assert.deepStrictEqual(rangeMedia.parseByteRange('bytes=-3', 10), { start: 7, end: 9, partial: true });
   assert.strictEqual(rangeMedia.parseByteRange('bytes=1-2,5-6', 10), null);
@@ -185,7 +258,8 @@ async function run() {
   assert.strictEqual(rangeMedia.strongETag('W/"weak"'), false);
   await testRangeCENCThroughRedirect();
   await testFullDownloadRedirectFallbackHelper();
-  console.log('webOS Range/CENC arbitrary-offset decrypt, redirect preservation and full-download fallback helper: PASS');
+  await testPersistentMediaResponses();
+  console.log('webOS Range/CENC decrypt, redirects, full-download fallback and persistent media responses: PASS');
 }
 
 run().catch(function (error) {
