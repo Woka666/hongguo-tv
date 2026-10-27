@@ -20,6 +20,16 @@ var categoryRequest = null;
 var calendarRequest = null;
 var engagementRequests = [];
 var videoModelRequests = 0;
+var playbackRequests = [];
+var deviceRegisterRequests = 0;
+var deviceRegisterFailures = 0;
+var deviceRegistration = null;
+var videoModelEmptyResponses = 0;
+var videoModelFallback = '';
+var fallbackRequests = [];
+var fallbackStatus = 200;
+var fallbackLocation = '';
+var fallbackResponseBody = '';
 var mediaDownloadRequests = 0;
 var videoSpade = '';
 var videoModelStatus = 200;
@@ -54,9 +64,28 @@ https.request = function (options) {
   req.destroy = function (error) { if (error) process.nextTick(function () { req.emit('error', error); }); };
   req.end = function () {
     var body = html;
-    if (options.path.indexOf('/novel/player/video_model/v1/') >= 0) {
+    var responseStatus = 200;
+    if (options.path.indexOf('/service/2/device_register/') >= 0) {
+      deviceRegisterRequests++;
+      deviceRegistration = { options: options, query: Object.fromEntries(new URL('https://fixture.test' + options.path).searchParams), body: Buffer.concat(requestChunks) };
+      body = JSON.stringify({ device_id_str: '1234567890123456789', install_id_str: '2234567890123456789' });
+      if (deviceRegisterFailures > 0) { deviceRegisterFailures--; responseStatus = 503; }
+    }
+    if (options.path.indexOf('/novel/player/multi_video_model/v1/') >= 0) {
       videoModelRequests++;
-      body = JSON.stringify({ data: { video_model: { video_list: [{ main_url: 'https://media.example.test/episode.mp4', video_meta: { vheight: 720, definition: '720P' }, encrypt_info: videoSpade ? { spade_a: videoSpade } : {} }] } } });
+      var playbackQuery = Object.fromEntries(new URL('https://fixture.test' + options.path).searchParams);
+      var playbackBody = JSON.parse(Buffer.concat(requestChunks).toString('utf8'));
+      playbackRequests.push({ options: options, query: playbackQuery, body: playbackBody });
+      var videoID = playbackBody.mixed_video_id_map['1004'][0], entry = {};
+      if (videoModelFallback) entry[videoID] = { video_model: { fallback_api: videoModelFallback } };
+      else entry[videoID] = { video_model: { video_list: [{ main_url: 'https://media.example.test/episode.mp4', video_meta: { vheight: 720, definition: '720P' }, encrypt_info: videoSpade ? { spade_a: videoSpade } : {} }] } };
+      if (videoModelEmptyResponses > 0) { videoModelEmptyResponses--; body = ''; }
+      else body = JSON.stringify({ code: 0, data: entry });
+    }
+    if (options.path.indexOf('/playback/fallback') >= 0) {
+      fallbackRequests.push({ options: options, headers: options.headers, path: options.path });
+      responseStatus = fallbackStatus;
+      body = fallbackResponseBody;
     }
     if (options.path.indexOf('/reading/bookapi/plan/v') >= 0) body = '{"code":0,"data":[]}';
     if (options.path.indexOf('/reading/distribution/category/landpage/v/') >= 0) {
@@ -77,7 +106,8 @@ https.request = function (options) {
     }
     process.nextTick(function () {
       var response = new PassThrough();
-      response.statusCode = options.path.indexOf('/novel/player/video_model/v1/') >= 0 ? videoModelStatus : 200;
+      response.statusCode = options.path.indexOf('/novel/player/multi_video_model/v1/') >= 0 ? videoModelStatus : responseStatus;
+      if (fallbackLocation && options.path.indexOf('/playback/fallback') >= 0) response.headers = { location: fallbackLocation };
       req.emit('response', response);
       response.end(body);
     });
@@ -218,6 +248,12 @@ async function run() {
     var fullToken = crypto.createHash('sha256').update(seriesID + ':4234567890123456789').digest('hex').slice(0, 24);
     var rangeToken = crypto.createHash('sha256').update(fullToken + ':range').digest('hex').slice(0, 24);
     assert.notStrictEqual(rangeToken, fullToken, 'Range and full playback use independent local media tokens');
+    deviceRegisterFailures = 1;
+    var registrationFailure = await provider.inspectVideoModel('1234567890123456788');
+    assert.strictEqual(registrationFailure.ok, false, 'device registration failure is reported as a playback preparation error');
+    assert.strictEqual(registrationFailure.error.code, 'ACCOUNT_DEVICE');
+    assert.strictEqual(deviceRegisterRequests, 1);
+
     var downloadsBeforePrefetch = mediaDownloadRequests;
     var prefetchError = await provider.prepare(seriesID, '4234567890123456789', '', false, 'range', true).then(function () { return null; }, function (error) { return error; });
     assert(prefetchError && /CENC key/.test(prefetchError.message), 'Range prefetch without a key fails quietly');
@@ -337,7 +373,56 @@ async function run() {
     assert.strictEqual(unliked.entries.length, 0);
     var dramaLike = provider.changeLibrary({ action: 'like', drama: drama, value: true });
     assert(dramaLike.entries[0].liked_at > 0, 'guest series-like behavior is retained');
-    console.log('webOS provider signed category/calendar, detail actors/social and empty-season fallback: PASS');
+
+    var beforeRetry = videoModelRequests;
+    videoModelEmptyResponses = 2;
+    var playbackProbe = await provider.inspectVideoModel('1334567890123456789');
+    assert.strictEqual(playbackProbe.ok, true, 'registered playback request resolves after bounded empty-response retries');
+    assert.strictEqual(videoModelRequests - beforeRetry, 3, 'empty playback responses retry with the same registered identity');
+    assert.strictEqual(deviceRegisterRequests, 2, 'failed registration is retried once on the next playback request');
+    assert(deviceRegistration, 'anonymous playback identity was registered before the playback request');
+    assert.strictEqual(deviceRegistration.options.headers.Cookie || '', '', 'anonymous playback registration has no account cookies');
+    assert.strictEqual(deviceRegistration.options.headers['X-Tt-Token'] || '', '', 'anonymous playback registration has no account token');
+    assert.strictEqual(deviceRegistration.query.device_id || '', '', 'registration does not send a fabricated device id');
+    assert.strictEqual(deviceRegistration.query.iid || '', '', 'registration does not send a fabricated install id');
+    var playbackIdentity = playbackRequests[0].query;
+    assert(playbackIdentity.device_id && playbackIdentity.iid && playbackIdentity.cdid, 'playback uses the registered identity');
+    playbackRequests.forEach(function (call) {
+      assert.strictEqual(call.options.path.split('?')[0], '/novel/player/multi_video_model/v1/');
+      assert.strictEqual(call.query.device_id, playbackIdentity.device_id, 'playback identity stays stable across source attempts');
+      assert.strictEqual(call.query.iid, playbackIdentity.iid, 'install identity stays stable across source attempts');
+      assert.strictEqual(call.options.headers['X-Medusa'], undefined, 'playback uses the registered-device endpoint without the Passport signature');
+      assert.strictEqual(call.body.mixed_video_id_map['1004'].length, 1);
+      assert(/^\d+$/.test(call.body.mixed_video_id_map['1004'][0]), 'playback request targets an exact video ID');
+    });
+
+    videoModelFallback = 'https://api5-normal-sinfonlineb.fqnovel.com/playback/fallback';
+    fallbackResponseBody = JSON.stringify({ code: 0, video_info: { code: 0, data: { video_list: { '720': { backup_url_list: ['https://media.example.test/fallback.mp4'], codec_type: 'h264', vheight: 720, quality_desc: '720P' } }, video_duration: 91 } } });
+    var fallbackProbe = await provider.inspectVideoModel('1434567890123456789');
+    assert.strictEqual(fallbackProbe.ok, true, 'legacy model fallback_api returns a playable source');
+    assert.strictEqual(fallbackProbe.diagnostic.quality_count, 1);
+    assert.deepStrictEqual(fallbackProbe.diagnostic.qualities, ['720P']);
+    assert.strictEqual(fallbackRequests.length, 1);
+    assert.strictEqual(fallbackRequests[0].options.method, 'GET');
+    assert.strictEqual(fallbackRequests[0].options.headers.Cookie || '', '', 'fallback request sends no account cookies');
+
+    videoModelFallback = 'https://api.fqnovel.com/playback/fallback';
+    fallbackStatus = 302;
+    fallbackLocation = 'https://attacker.test/collect';
+    var blockedFallback = await provider.inspectVideoModel('1534567890123456789');
+    assert.strictEqual(blockedFallback.ok, false, 'fallback redirect outside the trusted domains is rejected');
+    assert.strictEqual(blockedFallback.error.code, 'FALLBACK_API_BLOCKED');
+    assert.strictEqual(fallbackRequests.length, 2, 'blocked fallback redirect is not followed');
+
+    videoModelFallback = 'https://attacker.test/playback/fallback';
+    fallbackStatus = 200;
+    fallbackLocation = '';
+    var blockedHost = await provider.inspectVideoModel('1634567890123456789');
+    assert.strictEqual(blockedHost.ok, false, 'untrusted fallback host is rejected before a request');
+    assert.strictEqual(blockedHost.error.code, 'FALLBACK_API_BLOCKED');
+    assert.strictEqual(fallbackRequests.length, 2, 'untrusted fallback URL is never requested');
+    videoModelFallback = '';
+    console.log('webOS provider registered playback, map-shaped video lists, safe fallback_api and registration retry: PASS');
   } finally {
     provider.closeCache();
     https.request = originalRequest;

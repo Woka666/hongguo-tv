@@ -10,7 +10,9 @@
   var http = require('http');
   var https = require('https');
   var url = require('url');
+  var URLConstructor = typeof URL === 'function' ? URL : url.URL;
   var querystring = require('querystring');
+  var createAccount = require('./account');
   var passportSign = require('./passport-sign');
   var rangeMedia = require('./range-media');
   var createMediaCache = require('./media-cache');
@@ -19,8 +21,10 @@
 
   var API_BASE = 'https://api5-normal-sinfonlineb.fqnovel.com';
   var WEB_BASE = 'https://hongguoduanju.com';
-  var API_PATH = '/novel/player/video_model/v1/';
+  var API_PATH = '/novel/player/multi_video_model/v1/';
   var APP_UA = 'com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)';
+  var PLAYBACK_UA = 'com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)';
+  var FALLBACK_UA = 'com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)';
   var MAX_JSON = 5 * 1024 * 1024;
   var MAX_MEDIA = 512 * 1024 * 1024;
   var jobs = Object.create(null);
@@ -34,6 +38,7 @@
   var cacheRoot = '';
   var mediaCache = null;
   var lastVideoModelDiagnostic = null;
+  var playbackDevicePromise = null;
 
   function fail(message, status, code, stage) { var error = new Error(message); error.code = code || 'PROVIDER_ERROR'; if (status) error.status = status; if (stage) error.stage = stage; return error; }
   function preparationCancelled() {
@@ -89,7 +94,7 @@
     }).filter(Boolean);
   }
 
-  function requestBuffer(target, method, headers, body, limit, signal) {
+  function requestBuffer(target, method, headers, body, limit, signal, timeoutMs) {
     return new Promise(function (resolve, reject) {
       var finished = false;
       function finish(error, value) {
@@ -111,7 +116,7 @@
         path: parsed.path,
         method: method || 'GET',
         headers: headers || {},
-        timeout: 90000
+        timeout: Math.max(1000, Number(timeoutMs) || 90000)
       };
       var request;
       try { request = transport.request(options); } catch (error) { finish(error); return; }
@@ -246,6 +251,32 @@
     };
   }
 
+  function playbackQuery(device, stamp) {
+    return {
+      _rticket: String(stamp), ac: 'wifi', aid: '8662', app_name: 'novelread', channel: 'update_64', cdid: device.cdid,
+      compliance_status: '0', device_brand: 'Redmi', device_id: device.deviceID, device_platform: 'android',
+      device_type: '25053RT47C', dpi: '520', dragon_device_type: 'phone', host_abi: 'arm64-v8a', iid: device.installID,
+      is_android_pad_screen: '0', language: 'zh', manifest_version_code: '71332', need_personal_recommend: '1',
+      os: 'android', os_api: '36', os_version: '16', player_so_load: '1', pv_player: '71332',
+      resolution: '1280*2772', ssmix: 'a', update_version_code: '71332', version_code: '71332', version_name: '7.1.3.32'
+    };
+  }
+
+  function getPlaybackDevice() {
+    if (!playbackDevicePromise) {
+      var pending = Promise.resolve().then(function () {
+        return createAccount.registerPlaybackDevice(function (target, method, headers, body, limit) {
+          return requestBuffer(target, method, headers, body, limit, null, 8000);
+        });
+      }).catch(function (error) {
+        if (playbackDevicePromise === pending) playbackDevicePromise = null;
+        throw error;
+      });
+      playbackDevicePromise = pending;
+    }
+    return playbackDevicePromise;
+  }
+
   function randomID() {
     var bytes = crypto.randomBytes(16);
     var text = '';
@@ -322,7 +353,69 @@
     return value;
   }
   function modelString(value) { if (typeof value === 'string') return trim(value); if (value == null) return ''; return String(value); }
-  function modelRows(value) { return Array.isArray(value) ? value : (value && typeof value === 'object' ? [value] : []); }
+  function modelRows(value) {
+    if (Array.isArray(value)) return value;
+    if (!value || typeof value !== 'object') return [];
+    return Object.keys(value).map(function (key) { return value[key]; }).filter(function (row) { return row && typeof row === 'object'; });
+  }
+
+  function fallbackAPI(value) {
+    if (typeof value === 'string') {
+      var text = trim(value), parsed;
+      try { parsed = parseExactJSON(text); } catch (ignored) { return text; }
+      if (Array.isArray(parsed)) return fallbackAPI(parsed[0]);
+      if (parsed && typeof parsed === 'object') return fallbackAPI(parsed.fallback_api);
+      return text;
+    }
+    if (Array.isArray(value)) return value.length ? fallbackAPI(value[0]) : '';
+    if (value && typeof value === 'object') return fallbackAPI(value.fallback_api);
+    return '';
+  }
+
+  function checkedFallbackURL(target) {
+    var parsed;
+    try { parsed = URLConstructor ? new URLConstructor(String(target)) : url.parse(String(target)); } catch (ignored) { parsed = null; }
+    var host = String(parsed && parsed.hostname || '').toLowerCase();
+    function inDomain(domain) { return host === domain || host.slice(-domain.length - 1) === '.' + domain; }
+    var trusted = inDomain('fqnovel.com') || inDomain('snssdk.com');
+    var hasCredentials = parsed && (parsed.username || parsed.password || parsed.auth);
+    if (!parsed || parsed.protocol !== 'https:' || !host || hasCredentials || parsed.hash || parsed.port && parsed.port !== '443' || !trusted) {
+      throw fail('fallback_api 地址不在允许的 HTTPS 域名内', 502, 'FALLBACK_API_BLOCKED', 'fallback_api');
+    }
+    return parsed.href || url.format(parsed);
+  }
+
+  function fallbackModel(target, signal, redirects, deadline) {
+    var safeTarget;
+    try { safeTarget = checkedFallbackURL(target); } catch (error) { return Promise.reject(error); }
+    if (signal && signal.aborted) return Promise.reject(preparationCancelled());
+    deadline = Number(deadline) || Date.now() + 12000;
+    var remaining = deadline - Date.now();
+    if (remaining <= 0) return Promise.reject(fail('fallback_api 请求超时', 502, 'ETIMEDOUT', 'fallback_api'));
+    var headers = { 'User-Agent': FALLBACK_UA, Accept: 'application/json; charset=utf-8,application/x-protobuf' };
+    return requestBuffer(safeTarget, 'GET', headers, null, MAX_JSON, signal, remaining).then(function (response) {
+      if ([301, 302, 303, 307, 308].indexOf(Number(response.status)) >= 0) {
+        var location = response.headers && (response.headers.location || response.headers.Location);
+        if (!location || redirects >= 3) throw fail('fallback_api 跳转次数超限或缺少目标地址', 502, 'FALLBACK_API_REDIRECT', 'fallback_api');
+        var next;
+        try { next = URLConstructor ? new URLConstructor(location, safeTarget).toString() : url.resolve(safeTarget, location); } catch (ignored) { throw fail('fallback_api 跳转地址无效', 502, 'FALLBACK_API_REDIRECT', 'fallback_api'); }
+        try { checkedFallbackURL(next); } catch (error) { throw fail('fallback_api 跳转到不受信任的域名', 502, 'FALLBACK_API_BLOCKED', 'fallback_api'); }
+        return fallbackModel(next, signal, redirects + 1, deadline);
+      }
+      if (response.status !== 200) throw fail('fallback_api HTTP ' + response.status, 502, 'FALLBACK_API_HTTP', 'fallback_api');
+      var envelope;
+      try { envelope = parseExactJSON(response.body.toString('utf8')); } catch (error) { throw fail('fallback_api 响应不是有效 JSON', 502, 'FALLBACK_API_INVALID_JSON', 'fallback_api'); }
+      var responseCode = modelString(envelope && (envelope.Code == null ? envelope.code : envelope.Code));
+      if (responseCode && responseCode !== '0') throw fail('fallback_api 拒绝了播放请求（' + responseCode + '）', 502, 'FALLBACK_API_REJECTED', 'fallback_api');
+      var videoInfo = envelope && envelope.video_info;
+      if (!videoInfo || typeof videoInfo !== 'object') throw fail('fallback_api 未返回 video_info', 502, 'FALLBACK_API_MISSING_MODEL', 'fallback_api');
+      var infoCode = modelString(videoInfo.Code == null ? videoInfo.code : videoInfo.Code);
+      if (infoCode && infoCode !== '0') throw fail('fallback_api video_info 拒绝了播放请求（' + infoCode + '）', 502, 'FALLBACK_API_REJECTED', 'fallback_api');
+      var model = decodeModel(videoInfo.data);
+      if (!model || typeof model !== 'object') throw fail('fallback_api 未返回本集视频模型', 502, 'FALLBACK_API_MISSING_MODEL', 'fallback_api');
+      return model;
+    });
+  }
 
   function videoOptions(vid, signal, retry) {
     retry = retry || {};
@@ -333,73 +426,97 @@
     function next() {
       if (signal && signal.aborted) return Promise.reject(preparationCancelled());
       attempt++;
-      var device = freshDevice();
-      var stamp = Date.now();
-      var params = appQuery(device);
-      params._rticket = String(stamp);
-      var query = sortedQuery(params);
-      var body = JSON.stringify({ video_id: String(vid), content_type: 1, biz_param: { need_all_video_definition: true, video_platform: 3 } });
-      var signed = passportSign.sign(params, Buffer.from(body), stamp, device.deviceID);
-      query = signed.query;
-      var headers = signed.headers;
-      headers['User-Agent'] = APP_UA;
-      headers.Accept = 'application/json';
-      headers['Content-Type'] = 'application/json; charset=utf-8';
-      headers['X-XS-From-Web'] = '0'; headers['Sdk-Version'] = '2'; headers['X-SS-DP'] = '8662';
-      headers['X-Tt-Store-Region'] = 'cn'; headers['X-Tt-Store-Region-Src'] = 'did';
-      return requestBuffer(API_BASE + API_PATH + '?' + query, 'POST', headers, Buffer.from(body), MAX_JSON, signal).then(function (response) {
-        lastVideoModelDiagnostic = { stage: 'video_model', video_id: String(vid), attempt: attempt, http_status: response.status, response_bytes: response.body.length, elapsed_ms: Date.now() - startedAt, code: 'VIDEO_MODEL_RESPONSE' };
+      return getPlaybackDevice().then(function (device) {
+        if (signal && signal.aborted) throw preparationCancelled();
+        var stamp = Date.now();
+        var params = playbackQuery(device, stamp);
+        var body = JSON.stringify({
+          biz_param: { detail_page_version: 0, device_level: 3, disable_digg_stat: false, need_all_video_definition: true, need_mp4_align: false, use_os_player: false, use_server_dns: false, video_platform: 1024 },
+          mixed_video_id_map: { '1004': [String(vid)] }
+        });
+        var headers = {
+          'User-Agent': PLAYBACK_UA,
+          Accept: 'application/json; charset=utf-8,application/x-protobuf',
+          'Content-Type': 'application/json; charset=UTF-8'
+        };
+        lastVideoModelDiagnostic = { stage: 'multi_video_model', video_id: String(vid), attempt: attempt, code: 'VIDEO_MODEL_REQUEST' };
+        return requestBuffer(API_BASE + API_PATH + '?' + sortedQuery(params), 'POST', headers, Buffer.from(body), MAX_JSON, signal);
+      }).then(function (response) {
+        lastVideoModelDiagnostic = { stage: 'multi_video_model', video_id: String(vid), attempt: attempt, http_status: response.status, response_bytes: response.body.length, elapsed_ms: Date.now() - startedAt, code: 'VIDEO_MODEL_RESPONSE' };
         if (response.status < 200 || response.status >= 300) {
           lastVideoModelDiagnostic.code = 'VIDEO_MODEL_HTTP';
-          throw fail('video_model HTTP ' + response.status, response.status, 'VIDEO_MODEL_HTTP', 'video_model');
+          throw fail('multi_video_model HTTP ' + response.status, response.status, 'VIDEO_MODEL_HTTP', 'multi_video_model');
         }
         if (!response.body.length) {
           lastVideoModelDiagnostic.code = 'VIDEO_MODEL_EMPTY';
           if (attempt < 3) return next();
-          throw fail('video_model 返回空响应', 502, 'VIDEO_MODEL_EMPTY', 'video_model');
+          throw fail('multi_video_model 返回空响应', 502, 'VIDEO_MODEL_EMPTY', 'multi_video_model');
         }
         var envelope;
-        try { envelope = parseExactJSON(response.body.toString('utf8')); } catch (error) { lastVideoModelDiagnostic.code = 'VIDEO_MODEL_INVALID_JSON'; throw fail('video_model 响应不是有效 JSON', 502, 'VIDEO_MODEL_INVALID_JSON', 'video_model'); }
+        try { envelope = parseExactJSON(response.body.toString('utf8')); } catch (error) { lastVideoModelDiagnostic.code = 'VIDEO_MODEL_INVALID_JSON'; throw fail('multi_video_model 响应不是有效 JSON', 502, 'VIDEO_MODEL_INVALID_JSON', 'multi_video_model'); }
+        var responseCode = modelString(envelope && (envelope.code == null ? envelope.Code : envelope.code));
+        if (responseCode && responseCode !== '0') { lastVideoModelDiagnostic.code = 'VIDEO_MODEL_REJECTED'; throw fail('multi_video_model 拒绝了播放请求（' + responseCode + '）', 502, 'VIDEO_MODEL_REJECTED', 'multi_video_model'); }
         var data = envelope && envelope.data;
-        var model = decodeModel(data && data.video_model);
-        if (!model || typeof model !== 'object') { lastVideoModelDiagnostic.code = 'VIDEO_MODEL_MISSING'; throw fail('video_model 缺少视频数据', 502, 'VIDEO_MODEL_MISSING', 'video_model'); }
-        var options = [];
-        modelRows(model.video_list).forEach(function (row) {
-          var meta = row && row.video_meta || {};
-          var encryption = row && row.encrypt_info || {};
-          if (String(meta.codec_type || '').toLowerCase() === 'bytevc2') return;
-          var raw = modelString(row && row.main_url);
-          var mediaURL = raw;
-          if (!/^https?:\/\//i.test(mediaURL)) {
-            try { mediaURL = Buffer.from(raw, 'base64').toString(); } catch (ignored) {}
-          }
-          if (!/^https:\/\//i.test(mediaURL)) return;
-          var key = null;
-          if (modelString(encryption.spade_a)) {
-            try { key = decodeSpade(modelString(encryption.spade_a)); } catch (ignoredKey) { return; }
-          }
-          var height = number(meta.vheight);
-          var definition = modelString(meta.definition).match(/(\d{3,4})/);
-          if (definition) height = Number(definition[1]);
-          options.push({ url: mediaURL, key: key, height: height, quality: height > 0 ? String(height) + 'P' : '', duration: number(model.video_duration) });
-        });
-        if (!options.length) { lastVideoModelDiagnostic.code = 'VIDEO_MODEL_NO_QUALITY'; throw fail('video_model 没有可播放清晰度', 502, 'VIDEO_MODEL_NO_QUALITY', 'video_model'); }
+        var entry = data && data[String(vid)];
+        var model = decodeModel(entry && entry.video_model);
+        if (!model || typeof model !== 'object') model = decodeModel(data && data.video_model);
+        if (!model || typeof model !== 'object') { lastVideoModelDiagnostic.code = 'VIDEO_MODEL_MISSING'; throw fail('multi_video_model 未返回所选分集的视频数据', 502, 'VIDEO_MODEL_MISSING', 'multi_video_model'); }
+        var rows = modelRows(model.video_list);
+        var resolvedModel = Promise.resolve(model);
+        if (!rows.length) {
+          var fallback = fallbackAPI(model.fallback_api);
+          if (!fallback) { lastVideoModelDiagnostic.code = 'VIDEO_MODEL_MISSING'; throw fail('multi_video_model 未返回本集片源地址', 502, 'VIDEO_MODEL_MISSING', 'multi_video_model'); }
+          resolvedModel = fallbackModel(fallback, signal, 0).catch(function (error) {
+            lastVideoModelDiagnostic.code = error && error.code || 'FALLBACK_API_ERROR';
+            lastVideoModelDiagnostic.stage = 'fallback_api';
+            lastVideoModelDiagnostic.elapsed_ms = Date.now() - startedAt;
+            throw error;
+          });
+        }
+        return resolvedModel.then(function (optionModel) {
+          var options = [];
+          modelRows(optionModel.video_list).forEach(function (row) {
+            var meta = row && row.video_meta || {};
+            var encryption = row && row.encrypt_info || {};
+            if (String(row && row.codec_type || meta.codec_type || '').toLowerCase() === 'bytevc2') return;
+            var backup = row && row.backup_url_list;
+            var raw = modelString(row && (row.main_url || row.backup_url || (Array.isArray(backup) && backup[0])));
+            var mediaURL = raw;
+            if (!/^https?:\/\//i.test(mediaURL)) {
+              try { mediaURL = Buffer.from(raw, 'base64').toString(); } catch (ignored) {}
+            }
+            if (!/^https:\/\//i.test(mediaURL)) return;
+            var key = null;
+            if (modelString(encryption.spade_a)) {
+              try { key = decodeSpade(modelString(encryption.spade_a)); } catch (ignoredKey) { return; }
+            }
+            var height = number(row && (row.vheight || row.height) || meta.vheight || meta.height);
+            var definition = modelString(row && (row.quality_desc || row.definition) || meta.definition).match(/(\d{3,4})/);
+            if (definition) height = Number(definition[1]);
+            options.push({ url: mediaURL, key: key, height: height, quality: height > 0 ? String(height) + 'P' : '', duration: number(optionModel.video_duration) });
+          });
+        if (!options.length) { lastVideoModelDiagnostic.code = 'VIDEO_MODEL_NO_QUALITY'; throw fail('multi_video_model 没有可播放清晰度', 502, 'VIDEO_MODEL_NO_QUALITY', 'multi_video_model'); }
         lastVideoModelDiagnostic.code = 'VIDEO_MODEL_OK';
         lastVideoModelDiagnostic.quality_count = options.length;
         lastVideoModelDiagnostic.qualities = options.map(function (option) { return option.quality; }).filter(Boolean);
         lastVideoModelDiagnostic.elapsed_ms = Date.now() - startedAt;
         return options;
+        });
       }).catch(function (error) {
-        if (attempt < 3 && /空响应/.test(String(error.message || error))) return next();
+        if (attempt < 3 && error && error.code === 'VIDEO_MODEL_EMPTY') return next();
         if (maxTransientRetries > transientRetries && error && error.code !== 'VIDEO_MODEL_EMPTY' && transientVideoModelError(error)) {
           var delay = transientRetries === 0 ? 250 : 1000;
           transientRetries++;
           if (typeof retry.onRetry === 'function') retry.onRetry(error, delay, transientRetries);
           return recoveryDelay(signal, delay).then(next);
         }
-        if (lastVideoModelDiagnostic && lastVideoModelDiagnostic.video_id === String(vid) && lastVideoModelDiagnostic.code === 'VIDEO_MODEL_RESPONSE') {
+        if (lastVideoModelDiagnostic && lastVideoModelDiagnostic.video_id === String(vid) && lastVideoModelDiagnostic.code === 'VIDEO_MODEL_REQUEST') {
+          lastVideoModelDiagnostic.code = error && error.code === 'ACCOUNT_DEVICE' ? 'DEVICE_REGISTRATION_FAILED' : error && error.code || 'VIDEO_MODEL_NETWORK';
+          lastVideoModelDiagnostic.stage = error && error.code === 'ACCOUNT_DEVICE' ? 'device_register' : 'multi_video_model_transport';
+          lastVideoModelDiagnostic.elapsed_ms = Date.now() - startedAt;
+        } else if (lastVideoModelDiagnostic && lastVideoModelDiagnostic.video_id === String(vid) && lastVideoModelDiagnostic.code === 'VIDEO_MODEL_RESPONSE') {
           lastVideoModelDiagnostic.code = error && error.code || 'VIDEO_MODEL_NETWORK';
-          lastVideoModelDiagnostic.stage = error && error.stage || 'video_model_transport';
+          lastVideoModelDiagnostic.stage = error && error.stage || 'multi_video_model_transport';
           lastVideoModelDiagnostic.elapsed_ms = Date.now() - startedAt;
         }
         throw error;

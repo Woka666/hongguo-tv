@@ -36,10 +36,25 @@ function fixture(replies, warmHead) {
   const before = process.env.HONGGUO_WEBOS_CACHE_DIR;
   process.env.HONGGUO_WEBOS_CACHE_DIR = cache;
   const requests = [];
+  let registrations = 0;
   let rangeOpens = 0, downloads = 0, headWarms = 0;
   const transport = { request(options) {
-    assert(options.path.startsWith('/novel/player/video_model/v1/'));
-    const req = new EventEmitter(), index = requests.length, reply = replies[index] || {};
+    const req = new EventEmitter();
+    if (options.path.startsWith('/service/2/device_register/')) {
+      registrations++;
+      let destroyed = false;
+      req.write = () => {};
+      req.destroy = error => { destroyed = true; if (error) process.nextTick(() => req.emit('error', error)); };
+      req.end = () => process.nextTick(() => {
+        if (destroyed) return;
+        const res = new PassThrough(); res.statusCode = 200; res.headers = {};
+        req.emit('response', res);
+        res.end(JSON.stringify({ device_id_str: '1234567890123456789', install_id_str: '2234567890123456789' }));
+      });
+      return req;
+    }
+    assert(options.path.startsWith('/novel/player/multi_video_model/v1/'));
+    const index = requests.length, reply = replies[index] || {};
     const item = { destroyed: false, body: [], respond: null };
     requests.push(item);
     req.write = data => item.body.push(Buffer.from(data));
@@ -49,9 +64,9 @@ function fixture(replies, warmHead) {
       if (reply.network) { const error = new Error(reply.network); error.code = reply.network; req.emit('error', error); return; }
       const res = new PassThrough(); res.statusCode = reply.status || 200; res.headers = {};
       req.emit('response', res);
-      res.end(reply.empty ? '' : reply.body !== undefined ? reply.body : JSON.stringify({ data: { video_model: { video_list: [{
+      res.end(reply.empty ? '' : reply.body !== undefined ? reply.body : JSON.stringify({ data: { '456': { video_model: { video_list: [{
         main_url: 'https://media.example.test/recovery.mp4', video_meta: { vheight: 720, definition: '720P' }, encrypt_info: { spade_a: spade() }
-      }] } } }));
+      }] } } } }));
     };
     req.end = () => { if (!reply.hold) process.nextTick(item.respond); };
     return req;
@@ -69,7 +84,7 @@ function fixture(replies, warmHead) {
   provider.prepare = function (...args) {
     consumers.push({ prefetch: args[5], signal: args[6] }); return prepare.apply(provider, args);
   };
-  return { provider, requests, consumers, get rangeOpens() { return rangeOpens; }, get downloads() { return downloads; },
+  return { provider, requests, consumers, get registrations() { return registrations; }, get rangeOpens() { return rangeOpens; }, get downloads() { return downloads; },
     get headWarms() { return headWarms; },
     prepare(prefetch, signal) { return provider.prepare('123', '456', '', true, 'range', prefetch, signal); },
     close() { provider.closeCache(); if (before === undefined) delete process.env.HONGGUO_WEBOS_CACHE_DIR; else process.env.HONGGUO_WEBOS_CACHE_DIR = before; fs.rmSync(cache, { recursive: true }); }
@@ -83,7 +98,7 @@ test('source preparation is available to foreground while network-only head warm
     const speculative = f.prepare(true); await until(() => f.headWarms === 1);
     const current = await f.prepare(false);
     assert.equal(current.mode, 'range'); assert.equal(current.preparation_cached, true);
-    assert.equal(f.requests.length, 1); assert.equal(f.rangeOpens, 1);
+    assert.equal(f.requests.length, 1); assert.equal(f.registrations, 1); assert.equal(f.rangeOpens, 1);
     finish(128); assert.equal((await speculative).path, current.path);
     assert.equal(f.downloads, 0);
   } finally { f.close(); }
@@ -134,7 +149,7 @@ test('speculative errors stay single-shot while direct foreground errors retry t
   try {
     const result = await observe(recovered.prepare(false));
     assert(!result.error, 'a direct foreground transient error should recover once');
-    assert.equal(recovered.requests.length, 2);
+    assert.equal(recovered.requests.length, 2); assert.equal(recovered.registrations, 1);
     assert.equal(result.value.preparation_timing.media_resolve_retries, 1);
   } finally { recovered.close(); }
 
